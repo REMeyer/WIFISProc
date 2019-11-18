@@ -208,8 +208,9 @@ class WIFISSpectrum():
         pixel = np.arange(self.cubedata.shape[0]) + 1.0
         cubewl = pixel*self.cubehead['CDELT3'] + self.cubehead['CRVAL3']
         self.cubewl *= 1e10
-
+        
         self.z = z
+        self.cubewlz = self.cubewl / (1. + self.z)
         
         # Limits of a rectangle (x0,y0) [bottom left], (x1,y1) [top right] 
         # in the form [x0,x1,y0,y1]
@@ -537,7 +538,33 @@ class WIFISSpectrum():
             lat.display_minor_ticks(True)
             lon.display_minor_ticks(True)
     
+    def write_spectrum(self, suffix=''):
+        '''Function that writes the final reduced spectrum to file. Must have created a reduced spectrum first.
         
+        If there is no reduced spectrum an extracted spectrum will be written instead.
+        
+        The first extension is the spectrum, second is the wavelength array, third (if calculated) is the 
+        uncertainties'''
+        
+        try:
+            if self.extracted:
+                print(" writing extracted spectrum....")
+                hdu = fits.PrimaryHDU(self.spectrum)
+                hdu2 = fits.ImageHDU(self.cubewl, name = 'WL')
+                if self.uncertainties:
+                    hdu3 = fits.ImageHDU(self.cubeerr, name = 'ERR')
+                    hdul = fits.HDUList([hdu,hdu2,hdu3])
+                else:
+                    print('NO UNCERTAINTIES CALCULATED...NOT INCLUDING IN FITS')
+                    hdul = fits.HDUList([hdu,hdu2])
+            else:
+                print("Science spectrum not extracted...returning")
+                return
+
+            hdul.writeto(self.cubefile[:-5]+'_extracted_'+suffix+'.fits', overwrite=True)
+            print("Wrote to "+self.cubefile[:-5]+'_extracted_'+suffix+'.fits')
+        except:
+            print("There was a problem saving the spectrum")
         
 #   def centroid_finder(self, objtype):
 

@@ -42,228 +42,65 @@ class WIFISTelluric():
 
         self.target = target
         self.telluric = telluric 
-
-        galimf = fits.open(self.galfile[:-7]+'Img_1.fits')
-        #galimf = fits.open(self.galfile.split('_')[0]+'_obs_cubeImg.fits')
-        self.galim = galimf[0].data
-        self.galimhdr = galimf[0].header
-
-        tellimf = fits.open(self.tellfile[:-7]+'Img_1.fits')
-        #tellimf = fits.open(self.tellfile.split('_')[0]+'_obs_cubeImg.fits')
-        self.tellim = tellimf[0].data
-        self.tellimhdr = tellimf[0].header
-
-        self.tlimits = False #Limits of a rectangle (x0,y0) [bottom left], (x1,y1) [top right] in the form [x0,x1,y0,y1]
-        self.tcircle = False #Limits of a circle with center (x0,y0) in the form [x0,y0,radius]
-        self.glimits = False
-        self.gcircle = False
         
-        #Setting standard telluric fit adjustment values
-        self.tscale = 1.0 #Sets the scale of the vega spectrum to fit to the telluric star
-        self.tshift = 0.0 #Sets the wl shift of the vega spectrum relative to the telluric spectrum
-        self.gscale = 1.0 #Sets the scale of the telluric spectrum to fit to the target
-        self.gshift = 0.0 #Sets the scale of the telluirc spectrum to fit to the target
+        if not self.target.extracted:
+            print("Target spectrum not extracted, please extract spectrum before continuing.")
+        if not self.telluric.extracted:
+            print("Telluric spectrum not extracted, please extract spectrum before continuing.")
 
-        self.textracted = False
-        self.gextracted = False
-        self.reducedspectrum = False
-        self.uncertainties = False
-        self.telluricload = False
+        self.reduced = False
+        
+        self.tellshift = 0
+        self.tellscale = 0
+        self.tarshift = 0 
+        self.tarscale = 0
                 
-    def get_uncertainties(self):
-        '''Function that estimates uncertainties using the standard error of the mean of the
-        set of individual observations. Currently only works on science target frames. This method
-        should likely be used only when the number of individual observations are 10+'''
-
-        tartype = 'gal'
-        
-        #Checking to see if summed galaxy is extracted
-        if not self.gextracted:
-            print("Need full galaxy extraction to derive uncertainties...")
-            return
-        
-        #Getting the filepaths
-        tarbase = self.galfile.split('/')[:-1]
-        self.tarbase = '/'.join(tarbase) + '/'
-        tarfls = glob(self.tarbase + '*_obs_cube.fits')
-
-        #Extracting the spectra
-        masterarr = []
-        for i,fl in enumerate(tarfls):
-            wl, spec, head = self.extract_spectrum(fl, tartype)
-
-            #Interpolating the spectra onto the same wavelength grid as median galaxy
-            galinterp = np.interp(self.galwl, wl, spec, left = 0, right = 0)
-            masterarr.append(galinterp)
-
-
-        #Calculating the uncertainties
-        masterarr = np.array(masterarr)
-        errarr = np.std(masterarr, axis = 0) / np.sqrt(masterarr.shape[0])
-
-        #Setting the class values
-        self.galerr = errarr
-        self.uncertainties = True
-        
-    def extract_telluric(self):
-        '''Extracts the telluric spectrum using the specified aperture'''
-
-        self.tellwl, self.tellspec,\
-            self.tellheader = self.extract_spectrum(self.tellfile,'telluric')
-        self.textracted = True
-
-    def extract_galaxy(self):
-        '''Extracts the science spectrum using the specified aperture'''
-
-        self.galwl, self.galspec,\
-            self.galheader = self.extract_spectrum(self.galfile,'gal')
-        self.gextracted = True
-
-    def extract_both(self):
-        '''Convenience function for extracting both telluric and science spectra'''
-
-        self.extract_galaxy()
-        self.extract_telluric()
-    
     def plotSpectra(self, kind='both'):
 
         if kind == 'both':
             fig, axes = mpl.subplots(2,1, figsize = (15,10))
-            axes[0].plot(self.tellwl, self.tellspec,label='Mean')
-            axes[1].plot(self.galwl, self.galspec, label='Mean')
+            axes[0].plot(self.telluric.cubewl, self.telluric.spectrum, label='Telluric')
+            axes[1].plot(self.target.cubewl, self.target.spectrum, label='Target')
 
             axes[0].minorticks_on()
             axes[1].minorticks_on()
             mpl.show()
-        elif kind == 'telluirc':
+        elif kind == 'telluric':
             fig, axes = mpl.subplots(figsize = (15,10))
-            axes.plot(self.tellwl, self.tellspec,label='Mean')
+            axes.plot(self.telluric.cubewl, self.telluric.spectrum, label='Telluric')
             axes.minorticks_on()
             mpl.show()
-        elif kind == 'galaxy':
+        elif kind == 'target':
             fig, axes = mpl.subplots(figsize = (15,10))
-            axes.plot(self.tellwl, self.tellspec,label='Mean')
+            axes.plot(self.target.cubewl, self.target.spectrum, label='Target')
             axes.minorticks_on()
             mpl.show()
 
-    def open_reduced_telluric(self):
-        if os.path.isfile(self.tellfile[:-5]+'_fullreduce.fits'):
-            ffile = fits.open(self.tellfile[:-5]+'_fullreduce.fits')
-            self.tellwl = ffile[1].data
-            self.TellSpecReduced = ffile[0].data
-            self.tellspec = ffile[0].data
-            self.telluricload = True
-        else:
-            print("Reduced telluric file doesn't exist...")
-            return
-
-    def write_reduced_spectrum(self, suffix='', kind = 'Galaxy'):
+    def write_reduced_spectrum(self, suffix='', kind = 'target'):
         '''Function that writes the final reduced spectrum to file. Must have created a reduced spectrum first.
         
         If there is no reduced spectrum an extracted spectrum will be written instead.
         
         The first extension is the spectrum, second is the wavelength array, third (if calculated) is the 
         uncertainties'''
-        if kind == 'Telluric':
-            try:
-                hdu = fits.PrimaryHDU(self.TellSpecReduced)
-                hdu2 = fits.ImageHDU(self.tellwl, name = 'WL')
-                hdul = fits.HDUList([hdu,hdu2])
-                hdul.writeto(self.tellfile[:-5]+'_fullreduce.fits', overwrite=True)
-            except:
-                print("Something went wrong with Telluric saving...")
-                return
+        
+        if self.reduced:
+            print("Writing reduced final spectrum....")
+            hdu = fits.PrimaryHDU(self.reducedspectrum)
         else:
-            if self.reducedspectrum:
-                print("Writing reduced final spectrum....")
-                hdu = fits.PrimaryHDU(self.FinalSpec)
-            elif self.gextracted:
-                print("No reduced spectrum, writing extracted spectrum....")
-                hdu = fits.PrimaryHDU(self.galspec)
-            else:
-                print("Science spectrum not extracted...returning")
-                return
-
-            hdu2 = fits.ImageHDU(self.galwl, name = 'WL')
-            if self.uncertainties:
-                hdu3 = fits.ImageHDU(self.galerr, name = 'ERR')
-                hdul = fits.HDUList([hdu,hdu2,hdu3])
-            else:
-                print('NO UNCERTAINTIES CALCULATED...NOT INCLUDING IN FITS')
-                hdul = fits.HDUList([hdu,hdu2])
-
-            hdul.writeto(self.galfile[:-5]+'_extracted_'+suffix+'.fits', overwrite=True)
-            print("Wrote to "+self.galfile[:-5]+'_extracted_'+suffix+'.fits')
-
-    def extract_spectrum(self, fl, spectype):
-        '''Function that extracts a telluric or science spectrum in the aperture provided.
-
-        Inputs:
-            fl:         datacube file
-            spectype:   'gal' (science target) or 'telluric' 
-        '''
-
-        #Determined datacube type
-        if spectype == 'gal':
-            limits = self.glimits
-            circle = self.gcircle
-        elif spectype == 'telluric':
-            limits = self.tlimits
-            circle = self.tcircle
-
-        if (limits == None) and (circle == None):
-            print("Extraction limits not set. Please set the relevant circle or limits variables to extract the spectra")
+            print("Science spectrum not reduced...returning")
             return
 
-        #Opening the datacube, determining wl array
-        f = fits.open(fl)
-        full = f[0].data
-
-        header = f[0].header
-        pixel = np.arange(full.shape[0]) + 1.0
-        wlval = pixel*header['CDELT3'] + header['CRVAL3']
-        wlval *= 1e10
-
-        #Slicing telluric star, then taking the mean along the spatial axes.
-        if limits:
-            specslice = full[:,limits[0]:limits[1],limits[2]:limits[3]]
-            specmean = np.nanmean(specslice, axis=1)
-            specmean = np.nanmean(specmean, axis=1)
-            specmedian = np.nanmean(specslice, axis=1)
-            specmedian = np.nanmean(specmean, axis=1)
-            
-        elif circle:
-            whgood = circle_spec(full, circle[0],circle[1],circle[2], annulus = circle[3])
-            flatfull = full.reshape(full.shape[0],-1)
-            whgoodflat = whgood.flatten()
-            specslice = flatfull[:,whgoodflat]
-                        
-            specmean = []
-            for i in range(specslice.shape[0]):
-                sl = specslice[i,:]
-                
-                if False not in np.isnan(sl):
-                    specmean.append(1.0)
-                    continue
-                    
-                nans = np.isnan(sl)
-                sl[nans] = -1
-                gd = sl > 0
-                #sigclip = stats.sigmaclip(sl[gd], low = 15, high = 10)[0]
-                specmean.append(np.mean(sl[gd]))
-            
-            specmean = np.array(specmean)
-            #specmedian = np.nanmedian(specslice,axis=1)
-            #specmean = np.nanmean(specmean, axis=1)
-            
+        hdu2 = fits.ImageHDU(self.target.cubewl, name = 'WL')
+        if self.uncertainties:
+            hdu3 = fits.ImageHDU(self.reducederr, name = 'ERR')
+            hdul = fits.HDUList([hdu,hdu2,hdu3])
         else:
-            specslice = full
-            specmean = np.nanmean(specslice, axis=1)
-            specmean = np.nanmean(specmean, axis=1)
-            specmedian = np.nanmean(specslice, axis=1)
-            specmedian = np.nanmean(specmean, axis=1)
+            print('NO UNCERTAINTIES CALCULATED...NOT INCLUDING IN FITS')
+            hdul = fits.HDUList([hdu,hdu2])
 
-        return wlval, specmean, header
+        hdul.writeto(self.galfile[:-5]+'_telluricreduced_'+suffix+'.fits', overwrite=True)
+        print("Wrote to "+self.galfile[:-5]+'_telluricreduced_'+suffix+'.fits')
 
     def interactive_vega(self, vega_con_Interp, kind = 'Telluric'):
         '''Function that interactively allows for the fitting of either a telluric star and the vega spectrum
@@ -273,25 +110,25 @@ class WIFISTelluric():
         if kind == 'Telluric':
             target = 'Telluric'
             calib = 'Vega'
-            wl = self.tellwl
-            tstar = self.tellspec
-            shift = self.tshift
-            scale = self.tscale
+            wl = self.telluric.cubewl
+            tstar = self.telluric.spectrum
+            shift = self.tellshift
+            scale = self.tellscale
         else:
             target = 'Galaxy'
             calib = 'Telluric'
-            wl = self.galwl
-            tstar = self.galspec
-            shift = self.gshift
-            scale = self.gscale
+            wl = self.target.cubewl
+            tstar = self.target.spectrum
+            shift = self.tarshift
+            scale = self.tarscale
 
         vegainterp = vega_con_Interp(wl + shift) ** scale
         TellSpec = tstar / (vegainterp/np.nanmedian(vegainterp))
 
         #Creating the initial plot
         fig, axes = mpl.subplots(2, figsize = (14,8),sharex=True)
-        axes[0].plot(wl, tstar/np.nanmedian(tstar), 'r', label='Target')
-        axes[0].plot(wl, vegainterp/np.nanmedian(vegainterp), 'b', label='Calibration')
+        axes[0].plot(wl, WS.norm(tstar), 'r', label='Target')
+        axes[0].plot(wl, WS.norm(vegainterp), 'b', label='Calibration')
         axes[1].plot(wl, TellSpec, 'g', label='Target')
 
         axes[0].legend(loc='best')
@@ -335,10 +172,10 @@ class WIFISTelluric():
             axes[1].tick_params(direction = 'inout', top = True, right = True)
 
             vegainterp = vega_con_Interp(wl + shift) ** scale
-            TellSpec = tstar / (vegainterp / np.nanmedian(vegainterp))
+            TellSpec = tstar / WS.norm(vegainterp)
 
-            axes[0].plot(wl, tstar/np.nanmedian(tstar), 'r', label=target)
-            axes[0].plot(wl, vegainterp/np.nanmedian(vegainterp), 'b', label=calib)
+            axes[0].plot(wl, WS.norm(tstar), 'r', label=target)
+            axes[0].plot(wl, WS.norm(vegainterp), 'b', label=calib)
             axes[1].plot(wl, TellSpec, 'g', label=target + ' ' + 'Reduced')
 
             axes[0].legend(loc='best')
@@ -355,30 +192,26 @@ class WIFISTelluric():
         mpl.ioff()
 
         if kind == 'Telluric':
-            self.tscale = scale
-            self.tshift = shift
+            self.tellscale = scale
+            self.tellshift = shift
         else:
-            self.gscale = scale
-            self.gshift = shift
+            self.tarscale = scale
+            self.tarshift = shift
             
     def shiftScale(self, vega_con_Interp, kind = 'Telluric'):
         '''Function that interactively allows for the fitting of either a telluric star and the vega spectrum
         or the telluric spectrum and the science target spectrum.'''
 
         if kind == 'Telluric':
-            target = 'Telluric'
-            calib = 'Vega'
-            wl = self.tellwl
-            tstar = self.tellspec
-            shift = self.tshift
-            scale = self.tscale
+            wl = self.telluric.cubewl
+            tstar = self.telluric.spectrum
+            shift = self.tellshift
+            scale = self.tellscale
         else:
-            target = 'Galaxy'
-            calib = 'Telluric'
-            wl = self.galwl
-            tstar = self.galspec
-            shift = self.gshift
-            scale = self.gscale
+            wl = self.target.cubewl
+            tstar = self.target.spectrum
+            shift = self.tarshift
+            scale = self.tarscale
 
         vegainterp = vega_con_Interp(wl + shift) ** scale
         TellSpec = tstar / (vegainterp/np.nanmedian(vegainterp))
@@ -407,19 +240,19 @@ class WIFISTelluric():
             
         mpl.subplots_adjust(wspace=0, hspace=0)
 
-    def remove_features(self, target, confirm=True, kind='galaxy',\
+    def remove_features(self, target, confirm=True, kind='target',\
                        inspect = True):
 
         #Creating the initial plot
         if kind == 'telluric':
-            wl = np.array(self.tellwl)
-            spec = np.array(self.TellSpecReduced)
-        elif kind == 'galaxy_z':
-            wl = np.array(self.galwl / (1. + self.z))
-            spec = np.array(self.FinalSpec)
+            wl = np.array(self.telluric.cubewl)
+            spec = np.array(self.tellspecreduced)
+        elif kind == 'target_z':
+            wl = np.array(self.target.cubewlz)
+            spec = np.array(self.reducedspectrum)
         else:
-            wl = np.array(self.galwl)
-            spec = np.array(self.FinalSpec)
+            wl = np.array(self.target.cubewl)
+            spec = np.array(self.reducedspectrum)
             
         for vals in target:
             startval = vals[0]
@@ -453,30 +286,30 @@ class WIFISTelluric():
                 if c == 'Y':
                     if kind == 'telluric':
                         print("Saving new Telluric spectrum...")
-                        self.TellSpecReduced = spec 
+                        self.tellspecreduced = spec 
                     else:
                         print("Saving new Galaxy spectrum...")
-                        self.FinalSpec = spec
+                        self.reducedspectrum = spec
                 else:
                     continue
             else:
                 if kind == 'telluric':
                     print("Saving new Telluric spectrum...")
-                    self.TellSpecReduced = spec 
+                    self.tellspecreduced = spec 
                 else:
                     print("Saving new Galaxy spectrum...")
-                    self.FinalSpec = spec
+                    self.telluricspectrum = spec
 
     def telluricAdjust(self, region, scale, shift=0.0):
         
         start = region[0]
         end = region[1]
 
-        wh = np.where((self.galwl >= start) & (self.galwl <= end))[0]
+        wh = np.where((self.target.cubewl >= start) & (self.target.cubewl <= end))[0]
 
-        wlslice = self.galwl[wh]
+        wlslice = self.target.cubewl[wh]
         tellslice = self.TellInterp[wh]
-        galslice = self.galspec[wh]
+        galslice = self.target.spectrum[wh]
 
         fig, axes = mpl.subplots(2,1, figsize = (15,10))
         axes[0].plot(wlslice, norm(tellslice), 'r')
@@ -493,205 +326,198 @@ class WIFISTelluric():
         the fitting spectra to match the target spectra. Then corrects the galaxy spectrum by
         the telluric spectrum.'''
 
-        #Check if the relevant spectra are extracted.
-        if not self.textracted:
-            print("Telluric spectrum not extracted...attempting")
-            self.extract_telluric()
-        if not self.gextracted:
-            print("Science spectrum not extracted...attempting")
-            self.extract_galaxy()
-
-        if not self.telluricload: #If a telluric is not already reduced and loaded
-            ##Loading convolved Vega
-            vega_con = pd.read_csv('/Users/relliotmeyer/WIFIS/TellCorSpec/vega-con-new.txt',\
-                                   sep = ' ', header = None)
-            vega_con.columns = ['a', 'b']   #Col 1 = wavelength, col 2 = FLux
-            vegawl = vega_con['a']
-            vegadata = vega_con['b']
-            
-            #Creating interpolator for Vega spectrum
-            if hlinemode == 'measure':
-                poly = self.measure_hlines(fittype = 'normal', plot = hlineplot, profile=profile)
-                vegawlnew = vegawl + poly(vegawl)
-                #vega_Interp = interp1d(vegawl, vegadata, kind='cubic',\
-                #                 bounds_error = False)
-
-                vega_con_Interp = interp1d(vegawlnew, vegadata, kind='cubic',\
-                                           bounds_error = False)
-                
-                vegainterp = vega_con_Interp(self.tellwl + self.tshift) ** self.tscale
-                
-                #Create final vega spectrum using interpolator, then adjust telluric spectrum
-                self.TellSpecReduced = self.tellspec / (vegainterp / np.median(vegainterp)) 
-                print("SHIFT AND SCALE FOR VEGA IS: ", self.tshift, self.tscale)
-                
-                if plot:
-                    fig, axis = mpl.subplots(2,1,figsize=(15,10), sharex=True)
-                    axis[0].plot(self.tellwl, norm(self.tellspec),'b', label='Standard Star Spectrum')
-                    axis[0].plot(self.tellwl, norm(vegainterp),'r', label='Vega Spectrum')
-                    axis[1].plot(self.tellwl, norm(self.TellSpecReduced),'k', label='Telluric Spectrum')
-                    axis[0].set_ylabel('Relative Flux', fontsize = 17)
-                    axis[1].set_ylabel('Relative Flux', fontsize = 17)
-                    axis[1].set_xlabel(r'Wavelength (\AA)', fontsize = 17)
-                    axis[0].tick_params(axis='both', which='major', labelsize=13)
-                    axis[1].tick_params(axis='both', which='major', labelsize=13)
-                    midguess = np.array([8865, 9017, 9232, 9550, 10052, 10941, 12822])
-                    for midwl in midguess:
-                        axis[0].axvline(midwl, linestyle='--', color='gray')
-                        axis[1].axvline(midwl, linestyle='--', color='gray')
-                    
-                    axis[1].legend(fontsize = 15)
-                    axis[0].legend(fontsize = 15)
-
-                    mpl.minorticks_on()
-                    mpl.subplots_adjust(wspace=0, hspace=0)
-                    mpl.savefig('/Users/relliotmeyer/Desktop/VegaCorrection.pdf', dpi=500)
-                    mpl.show()
-                    
-            
-            elif hlinemode == 'none':
-                #poly = self.measure_hlines(fittype = 'normal', plot = True, profile=profile)
-                #vegawlnew = vegawl + poly(vegawl)
-                #vega_Interp = interp1d(vegawl, vegadata, kind='cubic',\
-                #                 bounds_error = False)
-
-                vega_con_Interp = interp1d(vegawl, vegadata, kind='cubic',\
-                                           bounds_error = False)
-                
-                vegainterp = vega_con_Interp(self.tellwl + self.tshift) ** self.tscale
-                
-                #Create final vega spectrum using interpolator, then adjust telluric spectrum
-                self.TellSpecReduced = self.tellspec / norm(vegainterp) 
-                
-                print("SHIFT AND SCALE FOR VEGA IS: ", self.tshift, self.tscale)
-                
-                if plot:
-                    fig, axis = mpl.subplots(2,1,figsize=(15,10))
-                    axis[0].plot(self.tellwl, norm(self.tellspec),'b')
-                    axis[0].plot(self.tellwl, norm(vegainterp),'r')
-                    axis[1].plot(self.tellwl, self.TellSpecReduced)
-                    mpl.show()
-
-            elif hlinemode == 'interactive':
-                #If interactive then enter interactive fitting mode
-                vega_con_Interp = interp1d(vegawl, vegadata, kind='cubic', bounds_error = False)
-
-                self.interactive_vega(vega_con_Interp)
-                vegainterp = vega_con_Interp(self.tellwl+self.tshift) ** self.tscale
-                #self.shiftScale(vega_con_Interp)
-
-                #Create final vega spectrum using interpolator, then adjust telluric spectrum
-                self.TellSpecReduced = self.tellspec / (vegainterp / np.median(vegainterp)) 
-                print("SHIFT AND SCALE FOR VEGA IS: ", self.tshift, self.tscale)
-                
-            elif hlinemode == 'remove':
-                newtelluric = self.measure_hlines(fittype = 'normal', plot=False,\
-                                                               remove=True, profile=profile)
-                if plot:
-                    fig, axes = mpl.subplots(figsize = (15,10))
-                    axes.plot(self.tellwl, self.tellspec,'b')
-                    axes.plot(self.tellwl, newtelluric,'r')
-                    mpl.show()
-                
-                self.TellSpecReduced = newtelluric
-            
-            elif hlinemode == 'broaden':
-                poly = self.measure_hlines(fittype = 'normal', plot = True, profile=profile)
-                vegawlnew = vegawl + poly(vegawl)
-
-                #vega_con_Interp = interp1d(vegawl, vegadata, kind='cubic',\
-                #               bounds_error = False)
-                
-                #vegainterp = vega_con_Interp(self.tellwl) ** self.tscale
-                
-                xs = np.arange(-50,51, vegawl[5]-vegawl[4])
-                #vp = gf.voigtfullnorm(xs, 0.5115, -3.0)
-                vp = gf.voigtfullnorm(xs, 15, 0.005)
-                out = np.convolve(vegadata, vp, mode='same')
-                #out = vegadata
-                vega_con_Interp = interp1d(vegawlnew, out, kind='cubic', bounds_error = False)
-                vegainterp = vega_con_Interp(self.tellwl+self.tshift) ** self.tscale
-                self.TellSpecReduced = self.tellspec / norm(vegainterp) 
-
-                if plot:
-                    fig, axis = mpl.subplots(2,1,figsize=(15,10))
-                    axis[0].plot(self.tellwl, norm(self.tellspec),'b')
-                    axis[0].plot(self.tellwl, norm(vegainterp),'r')
-                    axis[1].plot(self.tellwl, self.TellSpecReduced)
-                    axes.tick_params(which='minor')
-                #axis.plot(vegawl, norm(vegadata), 'b')
-                #axis.plot(vegawl, norm(out),'r')
-                    mpl.show()
-                return
-                
-            self.write_reduced_spectrum(kind = 'Telluric')
-
-        #Create interpolator of telluric spectrum (using non-NaN values)
-        notnan = ~np.isnan(self.TellSpecReduced)
-        TelStar_Interp = interp1d(self.tellwl[notnan], self.TellSpecReduced[notnan], \
-                                  kind='cubic', bounds_error=False)  
-
-        #If interactive then enter interactive fitting mode
-        if interactivetelluric:
-            #self.interactive_vega(TelStar_Interp, kind = 'Galaxy')
-            self.shiftScale(TelStar_Interp, kind = 'Galaxy')
-
-        print("SHIFT AND SCALE FOR TELLURIC IS: ", self.gshift, self.gscale)
+        ##Loading convolved Vega
+        vega_con = pd.read_csv('/Users/relliotmeyer/WIFIS/WIFISConn/vega-con-new.txt',\
+                               sep = ' ', header = None)
         
-        #Create final telluric spectrum using interpolator, then adjust science spectrum
-        self.TellInterp = TelStar_Interp(self.galwl+self.gshift) ** self.gscale
-        normtell = self.TellInterp/np.nanmedian(self.TellInterp)
-        
-        if len(telluricmask) > 0:
-            for i in range(len(telluricmask)):
-                whgd = np.where((self.galwl >= telluricmask[i][0]) & (self.galwl <= telluricmask[i][1]))[0]
-                pf = np.polyfit([telluricmask[i][0],telluricmask[i][1]], \
-                                [normtell[whgd][0],normtell[whgd][-1]], 1)
-                contfit = np.poly1d(pf)
-                cont = contfit(self.galwl[whgd])
-                normtell[whgd] = cont
+        vega_con.columns = ['a', 'b']   #Col 1 = wavelength, col 2 = FLux
+        vegawl = vega_con['a']
+        vegadata = vega_con['b']
 
-        self.FinalSpec = self.galspec / normtell
+        #Creating interpolator for Vega spectrum
+        if hlinemode == 'measure':
+            poly = self.measure_hlines(fittype = 'normal', plot = hlineplot, profile=profile)
+            vegawlnew = vegawl + poly(vegawl)
+            #vega_Interp = interp1d(vegawl, vegadata, kind='cubic',\
+            #                 bounds_error = False)
 
-        self.reducedspectrum = True
+            vega_con_Interp = interp1d(vegawlnew, vegadata, kind='cubic',\
+                                       bounds_error = False)
 
-        wlval = self.galwl
-        wlvalz = self.galwl / (1 + self.z)
+            vegainterp = vega_con_Interp(self.telluric.cubewl + self.tellshift) ** self.tellscale
 
-        #Plot resulting spectrum
-        if plot == True:
+            #Create final vega spectrum using interpolator, then adjust telluric spectrum
+            self.tellspecreduced = self.telluric.spectrum / WS.norm(vegainterp) 
+            print("SHIFT AND SCALE FOR VEGA IS: ", self.tellshift, self.tellscale)
 
-            regions = [(9400,9700),(10300,10500),(11000,11500),(11500,11900),\
-                       (12200,12500),(12600,13000)]
-            for i, region in enumerate(regions):
-                fig, axes = mpl.subplots(2,1,figsize = (15,10), sharex=True)
-                whreg = (wlvalz >= region[0]) & (wlvalz <= region[1])
-                
-                axes[0].plot(wlvalz[whreg],norm(normtell[whreg]), 'r')
-                axes[0].plot(wlvalz[whreg],norm(self.galspec[whreg]),'b')
-                
-                axes[1].plot(wlvalz[whreg],norm(self.FinalSpec[whreg]), 'k')
-                mpl.tight_layout()
+            if plot:
+                fig, axis = mpl.subplots(2,1,figsize=(15,10), sharex=True)
+                axis[0].plot(self.telluric.cubewl, norm(self.telluric.spectrum),'b', \
+                             label='Standard Star Spectrum')
+                axis[0].plot(self.telluric.cubewl, norm(vegainterp),'r', label='Vega Spectrum')
+                axis[1].plot(self.telluric.cubewl, norm(self.tellspecreduced),'k', label='Telluric Spectrum')
+                axis[0].set_ylabel('Relative Flux', fontsize = 17)
+                axis[1].set_ylabel('Relative Flux', fontsize = 17)
+                axis[1].set_xlabel(r'Wavelength (\AA)', fontsize = 17)
+                axis[0].tick_params(axis='both', which='major', labelsize=13)
+                axis[1].tick_params(axis='both', which='major', labelsize=13)
+                midguess = np.array([8865, 9017, 9232, 9550, 10052, 10941, 12822])
+                for midwl in midguess:
+                    axis[0].axvline(midwl, linestyle='--', color='gray')
+                    axis[1].axvline(midwl, linestyle='--', color='gray')
+
+                axis[1].legend(fontsize = 15)
+                axis[0].legend(fontsize = 15)
+
                 mpl.minorticks_on()
-                mpl.grid(axis='x', which='both')
-
                 mpl.subplots_adjust(wspace=0, hspace=0)
+                mpl.savefig('/Users/relliotmeyer/Desktop/VegaCorrection.pdf', dpi=500)
                 mpl.show()
-            
-            wlval = wlval / (1+self.z)
-            
-            fig, ax = mpl.subplots(figsize = (15,10))
-        
-            nonnan = ~np.isnan(self.FinalSpec)
-            ax.plot(wlval[nonnan][50:-20], norm(self.FinalSpec[nonnan][50:-20]), 'k')
-            
-            ax.set_title("Reduced and de-Redshifted Spectrum")
-            ax.set_xlabel("Wavelength ($\AA$)", fontsize=13)
-            ax.set_ylabel("Flux", fontsize = 13)
 
-            ax.xaxis.set_minor_locator(AutoMinorLocator())
+        elif hlinemode == 'none':
+            #poly = self.measure_hlines(fittype = 'normal', plot = True, profile=profile)
+            #vegawlnew = vegawl + poly(vegawl)
+            #vega_Interp = interp1d(vegawl, vegadata, kind='cubic',\
+            #                 bounds_error = False)
 
+            vega_con_Interp = interp1d(vegawl, vegadata, kind='cubic',\
+                                       bounds_error = False)
+
+            vegainterp = vega_con_Interp(self.telluric.cubewl + self.tellshift) ** self.tellscale
+
+            #Create final vega spectrum using interpolator, then adjust telluric spectrum
+            self.tellspecreduced = self.telluric.spectrum / norm(vegainterp) 
+
+            print("SHIFT AND SCALE FOR VEGA IS: ", self.tellshift, self.tellscale)
+
+            if plot:
+                fig, axis = mpl.subplots(2,1,figsize=(15,10))
+                axis[0].plot(self.telluric.cubewl, norm(self.telluric.spectrum),'b')
+                axis[0].plot(self.telluric.cubewl, norm(vegainterp),'r')
+                axis[1].plot(self.telluric.cubewl, self.tellspecreduced)
+                mpl.show()
+
+        elif hlinemode == 'interactive':
+            #If interactive then enter interactive fitting mode
+            vega_con_Interp = interp1d(vegawl, vegadata, kind='cubic', bounds_error = False)
+
+            self.interactive_vega(vega_con_Interp)
+            vegainterp = vega_con_Interp(self.telluric.cubewl + self.tellshift) ** self.tellscale
+            #self.shiftScale(vega_con_Interp)
+
+            #Create final vega spectrum using interpolator, then adjust telluric spectrum
+            self.tellspecreduced = self.telluric.spectrum / norm(vegainterp) 
+            print("SHIFT AND SCALE FOR VEGA IS: ", self.tellshift, self.tellscale)
+
+        elif hlinemode == 'remove':
+            newtelluric = self.measure_hlines(fittype = 'normal', plot=False,\
+                            remove=True, profile=profile)
+            if plot:
+                fig, axes = mpl.subplots(figsize = (15,10))
+                axes.plot(self.telluric.cubewl, self.telluric.spectrum,'b')
+                axes.plot(self.telluric.cubewl, newtelluric,'r')
+                mpl.show()
+
+            self.tellspecreduced = newtelluric
+
+        elif hlinemode == 'broaden':
+            poly = self.measure_hlines(fittype = 'normal', plot = True, profile=profile)
+            vegawlnew = vegawl + poly(vegawl)
+
+            #vega_con_Interp = interp1d(vegawl, vegadata, kind='cubic',\
+            #               bounds_error = False)
+
+            #vegainterp = vega_con_Interp(self.tellwl) ** self.tscale
+
+            xs = np.arange(-50,51, vegawl[5]-vegawl[4])
+            #vp = gf.voigtfullnorm(xs, 0.5115, -3.0)
+            vp = gf.voigtfullnorm(xs, 15, 0.005)
+            out = np.convolve(vegadata, vp, mode='same')
+            #out = vegadata
+            vega_con_Interp = interp1d(vegawlnew, out, kind='cubic', bounds_error = False)
+            vegainterp = vega_con_Interp(self.telluric.cubewl+self.tellshift) ** self.tellscale
+            self.tellspecreduced = self.tellspec / norm(vegainterp) 
+
+            if plot:
+                fig, axis = mpl.subplots(2,1,figsize=(15,10))
+                axis[0].plot(self.telluric.cubewl, norm(self.telluric.spectrum),'b')
+                axis[0].plot(self.telluric.cubewl, norm(vegainterp),'r')
+                axis[1].plot(self.telluric.cubewl, self.tellspecreduced)
+                axes.tick_params(which='minor')
+            #axis.plot(vegawl, norm(vegadata), 'b')
+            #axis.plot(vegawl, norm(out),'r')
+                mpl.show()
+            return
+
+        #self.write_reduced_spectrum(kind = 'Telluric')
+
+    #Create interpolator of telluric spectrum (using non-NaN values)
+    notnan = ~np.isnan(self.tellspecreduced)
+    TelStar_Interp = interp1d(self.telluric.cubewl[notnan], self.tellspecreduced[notnan], \
+                              kind='cubic', bounds_error=False)  
+
+    #If interactive then enter interactive fitting mode
+    if interactivetelluric:
+        #self.interactive_vega(TelStar_Interp, kind = 'Galaxy')
+        self.shiftScale(TelStar_Interp, kind = 'Target')
+
+    print("SHIFT AND SCALE FOR TELLURIC IS: ", self.tarshift, self.tarscale)
+
+    #Create final telluric spectrum using interpolator, then adjust science spectrum
+    self.tellinterp = TelStar_Interp(self.target.cubewl+self.tarshift) ** self.tarscale
+    normtell = WS.norm(self.tellinterp)
+
+    if len(telluricmask) > 0:
+        for i in range(len(telluricmask)):
+            whgd = np.where((self.target.cubewl >= telluricmask[i][0]) & \
+                            (self.target.cubewl <= telluricmask[i][1]))[0]
+            pf = np.polyfit([telluricmask[i][0],telluricmask[i][1]], \
+                            [normtell[whgd][0],normtell[whgd][-1]], 1)
+            contfit = np.poly1d(pf)
+            cont = contfit(self.galwl[whgd])
+            normtell[whgd] = cont
+
+    self.reducedspectrum = self.target.spectrum / normtell
+
+    self.reduced = True
+
+    #Plot resulting spectrum
+    if plot == True:
+        wlval = self.target.cubewl
+        wlvalz = self.target.cubewlz
+
+
+        regions = [(9400,9700),(10300,10500),(11000,11500),(11500,11900),\
+                   (12200,12500),(12600,13000)]
+        for i, region in enumerate(regions):
+            fig, axes = mpl.subplots(2,1,figsize = (15,10), sharex=True)
+            whreg = (wlvalz >= region[0]) & (wlvalz <= region[1])
+
+            axes[0].plot(wlvalz[whreg],norm(normtell[whreg]), 'r')
+            axes[0].plot(wlvalz[whreg],norm(self.target.spectrum[whreg]),'b')
+
+            axes[1].plot(wlvalz[whreg],norm(self.reducedspectrum[whreg]), 'k')
+            mpl.tight_layout()
+            mpl.minorticks_on()
+            mpl.grid(axis='x', which='both')
+
+            mpl.subplots_adjust(wspace=0, hspace=0)
             mpl.show()
+
+        wlval = wlval / (1+self.z)
+
+        fig, ax = mpl.subplots(figsize = (15,10))
+
+        nonnan = ~np.isnan(self.reducedspectrum)
+        ax.plot(wlval[nonnan][50:-20], norm(self.reducedspectrum[nonnan][50:-20]), 'k')
+
+        ax.set_title("Reduced and de-Redshifted Spectrum")
+        ax.set_xlabel("Wavelength ($\AA$)", fontsize=13)
+        ax.set_ylabel("Flux", fontsize = 13)
+
+        ax.xaxis.set_minor_locator(AutoMinorLocator())
+
+        mpl.show()
 
     def measure_hlines(self, fittype='quadratic', plot=True, remove=False, profile='lorentzian'):
         '''TESTING FUNCTION: To determine the wl offset between the vega and telluric spectrum'''
@@ -706,12 +532,12 @@ class WIFISTelluric():
         midwl = [np.mean([hlinelow[i],hlinehigh[i]]) for i in range(len(hlinelow))]
 
         ##Loading convolved Vega
-        vega_con = pd.read_csv('/Users/relliotmeyer/WIFIS/TellCorSpec/vega-con-new.txt', sep = ' ', header = None)
+        vega_con = pd.read_csv('/Users/relliotmeyer/WIFIS/WIFISProc/vega-con-new.txt', sep = ' ', header = None)
         vega_con.columns = ['a', 'b']   #Col 1 = wavelength, col 2 = FLux
         vegawl = vega_con['a']
         vegadata = vega_con['b']
         
-        telluriccopy = np.array(self.tellspec) 
+        telluriccopy = np.array(self.telluric.spectrum) 
 
         diffs = []
         if plot and fittype == 'normal':
@@ -720,9 +546,9 @@ class WIFISTelluric():
         
         for l in range(len(hlinelow)):
             if fittype == 'normal':
-                wh = np.where((self.tellwl >= hlinelow[l]) & (self.tellwl <= hlinehigh[l]))[0]
-                linewl = self.tellwl[wh]
-                linedata = self.tellspec[wh]
+                wh = np.where((self.telluric.cubewl >= hlinelow[l]) & (self.telluric.cubewl <= hlinehigh[l]))[0]
+                linewl = self.telluric.cubewl[wh]
+                linedata = self.telluric.spectrum[wh]
                 good = np.ones(len(midguess[2:]), dtype=bool)
                 
                 try:
@@ -738,8 +564,8 @@ class WIFISTelluric():
                         midline = popt[0]
 
                     if plot:
-                        axes[l].plot(linewl, linedata/np.median(linedata),'b:')
-                        axes[l].plot(linewl, fitg/np.median(fitg), 'r:')
+                        axes[l].plot(linewl, WS.norm(linedata),'b:')
+                        axes[l].plot(linewl, WS.norm(fitg), 'r:')
                         axes[l].axvline(midline, color = 'g', linestyle = ':')
                         #axes[l].plot(linewl, linedata/fitg)
 
@@ -763,8 +589,8 @@ class WIFISTelluric():
 
 
                     if plot:                    
-                        axes[l].plot(vwl, 0.2+vdata/np.median(vdata),'b--')
-                        axes[l].plot(vwl, 0.2+fitvega/np.median(fitvega), 'r--')
+                        axes[l].plot(vwl, 0.2+WS.norm(vdata),'b--')
+                        axes[l].plot(vwl, 0.2+WS.norm(fitvega), 'r--')
                         axes[4].set_xlabel("Wavelength $(\AA)$")
                         axes[l].axvline(midline, color = 'g', linestyle = '--')
 
@@ -785,9 +611,10 @@ class WIFISTelluric():
                         good[l - 2] = False
                 
             elif fittype == 'quadratic':
-                wh = np.where((self.tellwl >= hlinelow[l]) & (self.tellwl <= hlinehigh[l]))[0]
-                linewl = np.array(self.tellwl[wh])
-                linedata = self.tellspec[wh]
+                wh = np.where((self.telluric.cubewl >= hlinelow[l]) &\
+                              (self.telluric.cubewl <= hlinehigh[l]))[0]
+                linewl = np.array(self.telluric.cubewl[wh])
+                linedata = self.telluric.spectrum[wh]
                 datawl = (linewl[1] - linewl[0])
 
                 minarg = np.argmin(linedata)
@@ -844,82 +671,10 @@ class WIFISTelluric():
         '''Produces plots of the telluric and galaxy images. Axes should be 
         in celestial coordinates.'''
         
-        tellwcs = wcs.WCS(self.tellimhdr)
-        galwcs = wcs.WCS(self.galimhdr)
-
         fig = mpl.figure(figsize = (12,10))
         gs = gridspec.GridSpec(2,1)
+        
+        telluric.plotImage(subimage=gs[0,0])
+        target.plotImage(subimage=gs[1,0])
 
-        ax1 = mpl.subplot(gs[0,0], projection = tellwcs)
-        ax2 = mpl.subplot(gs[1,0], projection = galwcs)
-        axes = [ax1,ax2]
-                
-        norm = ImageNormalize(self.tellim, interval=ZScaleInterval())
-        axes[0].imshow(self.tellim,interpolation = None, origin='lower',norm=norm, \
-                      cmap='Greys')
-        
-        norm = ImageNormalize(self.galim, interval=ZScaleInterval())
-        axes[1].imshow(self.galim,interpolation = None, origin='lower',norm=norm,\
-                      cmap='Greys')
-        
-        if self.tlimits:
-            rect = patches.Rectangle((self.tlimits[0], self.tlimits[1]), self.tlimits[2],\
-                linewidth=2, edgecolor='r',facecolor='none')
-            axes[0].add_patch(rect)
-        if self.glimits:
-            rect = patches.Rectangle((self.glimits[0], self.glimits[1]), self.glimits[2],\
-                linewidth=2, edgecolor='r',facecolor='none')
-            axes[1].add_patch(rect)
-        if self.tcircle:
-            if self.tcircle[3]:
-                circ = patches.Circle([self.tcircle[1],self.tcircle[0]],\
-                    radius=self.tcircle[2], linewidth=2, edgecolor='m',facecolor='none')
-                axes[0].add_patch(circ)
-                circ = patches.Circle([self.tcircle[1],self.tcircle[0]],\
-                    radius=self.tcircle[3], linewidth=2, edgecolor='r',facecolor='none')
-                axes[0].add_patch(circ)
-            else:
-                circ = patches.Circle([self.tcircle[1],self.tcircle[0]],\
-                    radius=self.tcircle[2], linewidth=2, edgecolor='r',facecolor='none')
-                axes[0].add_patch(circ)
-        if self.gcircle:
-            if self.gcircle[3]:
-                circ = patches.Circle([self.gcircle[1],self.gcircle[0]],\
-                    radius=self.gcircle[2], linewidth=2, edgecolor='m',facecolor='none')
-                axes[1].add_patch(circ)
-                circ = patches.Circle([self.gcircle[1],self.gcircle[0]],\
-                    radius=self.gcircle[3], linewidth=2, edgecolor='r',facecolor='none')
-                axes[1].add_patch(circ)
-            else:
-                circ = patches.Circle([self.gcircle[1],self.gcircle[0]],\
-                    radius=self.gcircle[2], linewidth=2, edgecolor='r',facecolor='none')
-                axes[1].add_patch(circ)
-            
-        axes[0].grid('both', color='g', alpha=0.5)
-        axes[1].grid('both', color='g', alpha=0.5)
-        
-        lon, lat = axes[0].coords
-        lon.set_ticks(spacing=5 * u.arcsec, size = 5)
-        lon.set_ticklabel(size = 13)
-        lon.set_ticks_position('lbtr')
-        lon.set_ticklabel_position('lb')
-        lat.set_ticks(spacing=10 * u.arcsec, size = 5)
-        lat.set_ticklabel(size = 13)
-        lat.set_ticks_position('lbtr')
-        lat.set_ticklabel_position('lb')
-        lat.display_minor_ticks(True)
-        lon.display_minor_ticks(True)
-        
-        lon, lat = axes[1].coords
-        lon.set_ticks(spacing=5 * u.arcsec, size = 5)
-        lon.set_ticklabel(size = 13)
-        lon.set_ticks_position('lbtr')
-        lon.set_ticklabel_position('lb')
-        lat.set_ticks(spacing=10 * u.arcsec, size = 5)
-        lat.set_ticklabel(size = 13)
-        lat.set_ticks_position('lbtr')
-        lat.set_ticklabel_position('lb')
-        lat.display_minor_ticks(True)
-        lon.display_minor_ticks(True)
-        
         mpl.show()        
