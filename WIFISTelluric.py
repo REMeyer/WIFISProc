@@ -312,14 +312,14 @@ class WIFISTelluric():
         galslice = self.target.spectrum[wh]
 
         fig, axes = mpl.subplots(2,1, figsize = (15,10))
-        axes[0].plot(wlslice, norm(tellslice), 'r')
-        axes[0].plot(wlslice, norm(galslice), 'b')
-        axes[1].plot(wlslice, galslice/norm(tellslice**scale),'k')
+        axes[0].plot(wlslice, WS.norm(tellslice), 'r')
+        axes[0].plot(wlslice, WS.norm(galslice), 'b')
+        axes[1].plot(wlslice, galslice/WS.norm(tellslice**scale),'k')
         mpl.show()
     
     def do_telluric_reduction(self, hlinemode = 'measure',\
                     interactivetelluric = False, plot = True, profile='lorentzian',\
-                             telluricmask = [], hlineplot=False):
+                    telluricmask = [], hlineplot=False):
         '''Function that reduces the science spectrum with a telluric spectrum. 
         First removes h-lines from the telluric spectrum with either a vega spectrum from file,
         or directly fitting the lines. Has interactive modes to manually stretch and shift
@@ -327,7 +327,7 @@ class WIFISTelluric():
         the telluric spectrum.'''
 
         ##Loading convolved Vega
-        vega_con = pd.read_csv('/Users/relliotmeyer/WIFIS/WIFISConn/vega-con-new.txt',\
+        vega_con = pd.read_csv('/Users/relliotmeyer/WIFIS/WIFISProc/vega-con-new.txt',\
                                sep = ' ', header = None)
         
         vega_con.columns = ['a', 'b']   #Col 1 = wavelength, col 2 = FLux
@@ -347,15 +347,17 @@ class WIFISTelluric():
             vegainterp = vega_con_Interp(self.telluric.cubewl + self.tellshift) ** self.tellscale
 
             #Create final vega spectrum using interpolator, then adjust telluric spectrum
-            self.tellspecreduced = self.telluric.spectrum / WS.norm(vegainterp) 
+            self.tellspecreduced = self.telluric.spectrum / WS.norm(vegainterp)
+            self.tellerrreduced = self.telluric.errsum / WS.norm(vegainterp)
+
             print("SHIFT AND SCALE FOR VEGA IS: ", self.tellshift, self.tellscale)
 
             if plot:
                 fig, axis = mpl.subplots(2,1,figsize=(15,10), sharex=True)
-                axis[0].plot(self.telluric.cubewl, norm(self.telluric.spectrum),'b', \
+                axis[0].plot(self.telluric.cubewl, WS.norm(self.telluric.spectrum),'b', \
                              label='Standard Star Spectrum')
-                axis[0].plot(self.telluric.cubewl, norm(vegainterp),'r', label='Vega Spectrum')
-                axis[1].plot(self.telluric.cubewl, norm(self.tellspecreduced),'k', label='Telluric Spectrum')
+                axis[0].plot(self.telluric.cubewl, WS.norm(vegainterp),'r', label='Vega Spectrum')
+                axis[1].plot(self.telluric.cubewl, WS.norm(self.tellspecreduced),'k', label='Telluric Spectrum')
                 axis[0].set_ylabel('Relative Flux', fontsize = 17)
                 axis[1].set_ylabel('Relative Flux', fontsize = 17)
                 axis[1].set_xlabel(r'Wavelength (\AA)', fontsize = 17)
@@ -386,13 +388,14 @@ class WIFISTelluric():
             vegainterp = vega_con_Interp(self.telluric.cubewl + self.tellshift) ** self.tellscale
 
             #Create final vega spectrum using interpolator, then adjust telluric spectrum
-            self.tellspecreduced = self.telluric.spectrum / norm(vegainterp) 
+            self.tellspecreduced = self.telluric.spectrum / WS.norm(vegainterp) 
+            self.tellerrreduced = self.telluric.errsum / WS.norm(vegainterp)
 
             print("SHIFT AND SCALE FOR VEGA IS: ", self.tellshift, self.tellscale)
 
             if plot:
                 fig, axis = mpl.subplots(2,1,figsize=(15,10))
-                axis[0].plot(self.telluric.cubewl, norm(self.telluric.spectrum),'b')
+                axis[0].plot(self.telluric.cubewl, WS.norm(self.telluric.spectrum),'b')
                 axis[0].plot(self.telluric.cubewl, norm(vegainterp),'r')
                 axis[1].plot(self.telluric.cubewl, self.tellspecreduced)
                 mpl.show()
@@ -406,7 +409,9 @@ class WIFISTelluric():
             #self.shiftScale(vega_con_Interp)
 
             #Create final vega spectrum using interpolator, then adjust telluric spectrum
-            self.tellspecreduced = self.telluric.spectrum / norm(vegainterp) 
+            self.tellspecreduced = self.telluric.spectrum / WS.norm(vegainterp)
+            self.tellerrreduced = self.telluric.errsum / WS.norm(vegainterp)
+
             print("SHIFT AND SCALE FOR VEGA IS: ", self.tellshift, self.tellscale)
 
         elif hlinemode == 'remove':
@@ -419,6 +424,7 @@ class WIFISTelluric():
                 mpl.show()
 
             self.tellspecreduced = newtelluric
+            self.tellerrreduced = self.telluric.errsum
 
         elif hlinemode == 'broaden':
             poly = self.measure_hlines(fittype = 'normal', plot = True, profile=profile)
@@ -436,12 +442,14 @@ class WIFISTelluric():
             #out = vegadata
             vega_con_Interp = interp1d(vegawlnew, out, kind='cubic', bounds_error = False)
             vegainterp = vega_con_Interp(self.telluric.cubewl+self.tellshift) ** self.tellscale
-            self.tellspecreduced = self.tellspec / norm(vegainterp) 
+            self.tellspecreduced = self.telluric.spectrum / WS.norm(vegainterp)
+            self.tellerrreduced = self.telluric.errsum / WS.norm(vegainterp)
+
 
             if plot:
                 fig, axis = mpl.subplots(2,1,figsize=(15,10))
-                axis[0].plot(self.telluric.cubewl, norm(self.telluric.spectrum),'b')
-                axis[0].plot(self.telluric.cubewl, norm(vegainterp),'r')
+                axis[0].plot(self.telluric.cubewl, WS.norm(self.telluric.spectrum),'b')
+                axis[0].plot(self.telluric.cubewl, WS.norm(vegainterp),'r')
                 axis[1].plot(self.telluric.cubewl, self.tellspecreduced)
                 axes.tick_params(which='minor')
             #axis.plot(vegawl, norm(vegadata), 'b')
@@ -451,73 +459,81 @@ class WIFISTelluric():
 
         #self.write_reduced_spectrum(kind = 'Telluric')
 
-    #Create interpolator of telluric spectrum (using non-NaN values)
-    notnan = ~np.isnan(self.tellspecreduced)
-    TelStar_Interp = interp1d(self.telluric.cubewl[notnan], self.tellspecreduced[notnan], \
-                              kind='cubic', bounds_error=False)  
+        #Create interpolator of telluric spectrum (using non-NaN values)
+        notnan = ~np.isnan(self.tellspecreduced)
+        TelStar_Interp = interp1d(self.telluric.cubewl[notnan], self.tellspecreduced[notnan], \
+                                  kind='cubic', bounds_error=False)
+        notnanerr = ~np.isnan(self.tellerrreduced)
+        TelErr_Interp = interp1d(self.telluric.cubewl[notnan], self.tellerreduced[notnan], \
+                                  kind='cubic', bounds_error=False)
 
-    #If interactive then enter interactive fitting mode
-    if interactivetelluric:
-        #self.interactive_vega(TelStar_Interp, kind = 'Galaxy')
-        self.shiftScale(TelStar_Interp, kind = 'Target')
+        #If interactive then enter interactive fitting mode
+        if interactivetelluric:
+            #self.interactive_vega(TelStar_Interp, kind = 'Galaxy')
+            self.shiftScale(TelStar_Interp, kind = 'Target')
 
-    print("SHIFT AND SCALE FOR TELLURIC IS: ", self.tarshift, self.tarscale)
+        print("SHIFT AND SCALE FOR TELLURIC IS: ", self.tarshift, self.tarscale)
 
-    #Create final telluric spectrum using interpolator, then adjust science spectrum
-    self.tellinterp = TelStar_Interp(self.target.cubewl+self.tarshift) ** self.tarscale
-    normtell = WS.norm(self.tellinterp)
+        #Create final telluric spectrum using interpolator, then adjust science spectrum
+        self.tellinterp = TelStar_Interp(self.target.cubewl+self.tarshift) ** self.tarscale
+        self.tellerrinterp = TelErr_Interp(self.target.cubewl+self.tarshift) ** self.tarscale
 
-    if len(telluricmask) > 0:
-        for i in range(len(telluricmask)):
-            whgd = np.where((self.target.cubewl >= telluricmask[i][0]) & \
-                            (self.target.cubewl <= telluricmask[i][1]))[0]
-            pf = np.polyfit([telluricmask[i][0],telluricmask[i][1]], \
-                            [normtell[whgd][0],normtell[whgd][-1]], 1)
-            contfit = np.poly1d(pf)
-            cont = contfit(self.galwl[whgd])
-            normtell[whgd] = cont
+        normtell = WS.norm(self.tellinterp)
+        normtellerr = self.tellerrinterp / np.nanmedian(self.tellinterp)
+        
+        # Removing specified regions from the telluric spectrum via a linear fit
+        if len(telluricmask) > 0:
+            for i in range(len(telluricmask)):
+                whgd = np.where((self.target.cubewl >= telluricmask[i][0]) & \
+                                (self.target.cubewl <= telluricmask[i][1]))[0]
+                pf = np.polyfit([telluricmask[i][0],telluricmask[i][1]], \
+                                [normtell[whgd][0],normtell[whgd][-1]], 1)
+                contfit = np.poly1d(pf)
+                cont = contfit(self.target.cubewl[whgd])
+                normtell[whgd] = cont
 
-    self.reducedspectrum = self.target.spectrum / normtell
+        self.reducedspectrum = self.target.spectrum / normtell
+        errterm = np.sqrt((self.target.errsum / self.target.spectrum)**2.0 + \
+                         (normtellerr / normtell)**2.0)
+        self.reducederr = self.reducedspectrum * errterm
 
-    self.reduced = True
+        self.reduced = True
 
-    #Plot resulting spectrum
-    if plot == True:
-        wlval = self.target.cubewl
-        wlvalz = self.target.cubewlz
+        #Plot resulting spectrum
+        if plot == True:
+            wlval = self.target.cubewl
+            wlvalz = self.target.cubewlz
 
 
-        regions = [(9400,9700),(10300,10500),(11000,11500),(11500,11900),\
-                   (12200,12500),(12600,13000)]
-        for i, region in enumerate(regions):
-            fig, axes = mpl.subplots(2,1,figsize = (15,10), sharex=True)
-            whreg = (wlvalz >= region[0]) & (wlvalz <= region[1])
+            regions = [(9400,9700),(10300,10500),(11000,11500),(11500,11900),\
+                       (12200,12500),(12600,13000)]
+            for i, region in enumerate(regions):
+                fig, axes = mpl.subplots(2,1,figsize = (15,10), sharex=True)
+                whreg = (wlvalz >= region[0]) & (wlvalz <= region[1])
 
-            axes[0].plot(wlvalz[whreg],norm(normtell[whreg]), 'r')
-            axes[0].plot(wlvalz[whreg],norm(self.target.spectrum[whreg]),'b')
+                axes[0].plot(wlvalz[whreg],WS.norm(normtell[whreg]), 'r')
+                axes[0].plot(wlvalz[whreg],WS.norm(self.target.spectrum[whreg]),'b')
 
-            axes[1].plot(wlvalz[whreg],norm(self.reducedspectrum[whreg]), 'k')
-            mpl.tight_layout()
-            mpl.minorticks_on()
-            mpl.grid(axis='x', which='both')
+                axes[1].plot(wlvalz[whreg],WS.norm(self.reducedspectrum[whreg]), 'k')
+                mpl.tight_layout()
+                mpl.minorticks_on()
+                mpl.grid(axis='x', which='both')
 
-            mpl.subplots_adjust(wspace=0, hspace=0)
+                mpl.subplots_adjust(wspace=0, hspace=0)
+                mpl.show()
+
+            fig, ax = mpl.subplots(figsize = (15,10))
+
+            nonnan = ~np.isnan(self.reducedspectrum)
+            ax.plot(wlvalz[nonnan][50:-20], WS.norm(self.reducedspectrum[nonnan][50:-20]), 'k')
+
+            ax.set_title("Reduced and de-Redshifted Spectrum")
+            ax.set_xlabel("Wavelength ($\AA$)", fontsize=13)
+            ax.set_ylabel("Flux", fontsize = 13)
+
+            ax.xaxis.set_minor_locator(AutoMinorLocator())
+
             mpl.show()
-
-        wlval = wlval / (1+self.z)
-
-        fig, ax = mpl.subplots(figsize = (15,10))
-
-        nonnan = ~np.isnan(self.reducedspectrum)
-        ax.plot(wlval[nonnan][50:-20], norm(self.reducedspectrum[nonnan][50:-20]), 'k')
-
-        ax.set_title("Reduced and de-Redshifted Spectrum")
-        ax.set_xlabel("Wavelength ($\AA$)", fontsize=13)
-        ax.set_ylabel("Flux", fontsize = 13)
-
-        ax.xaxis.set_minor_locator(AutoMinorLocator())
-
-        mpl.show()
 
     def measure_hlines(self, fittype='quadratic', plot=True, remove=False, profile='lorentzian'):
         '''TESTING FUNCTION: To determine the wl offset between the vega and telluric spectrum'''
@@ -674,7 +690,8 @@ class WIFISTelluric():
         fig = mpl.figure(figsize = (12,10))
         gs = gridspec.GridSpec(2,1)
         
-        telluric.plotImage(subimage=gs[0,0])
-        target.plotImage(subimage=gs[1,0])
+        self.telluric.plotImage(subimage=gs[0,0])
+        print('mid')
+        self.target.plotImage(subimage=gs[1,0])
 
         mpl.show()        

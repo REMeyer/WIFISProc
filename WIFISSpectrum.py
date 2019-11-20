@@ -43,7 +43,7 @@ mpl.rc('font', family='serif')
 
 def norm(spec):
     ''' Quick function to median normalize an array.'''
-    return spec/np.median(spec)
+    return spec/np.nanmedian(spec)
 
 def circle_spec(spec, x0, y0, radius, annulus = False):
     '''Function that returns a mask defining the regions within a 
@@ -206,7 +206,7 @@ class WIFISSpectrum():
         
         # Generate wavelength array from header in Angstroms
         pixel = np.arange(self.cubedata.shape[0]) + 1.0
-        cubewl = pixel*self.cubehead['CDELT3'] + self.cubehead['CRVAL3']
+        self.cubewl = pixel*self.cubehead['CDELT3'] + self.cubehead['CRVAL3']
         self.cubewl *= 1e10
         
         self.z = z
@@ -273,8 +273,59 @@ class WIFISSpectrum():
             
             noise = np.sqrt(datasqrt**2.0 + skysqrt**2.0 + thermalsqrt**2.0)
             
-            self.galerr = noise
+            self.cubeerr = noise
             self.uncertainties = True
+            
+            if self.limits:
+                specslice = self.cubeerr[:,self.limits[0]:self.limits[1],\
+                                          self.limits[2]:self.limits[3]]
+                self.errsum = np.sqrt(np.nansum(specslice**2.0, axis=(1,2)))
+            elif self.circle:
+                whgood = circle_spec(self.cubeerr, self.circle[0],self.circle[1],\
+                                 self.circle[2], annulus = self.circle[3])
+                flatfull = self.cubeerr.reshape(self.cubeerr.shape[0],-1)
+                whgoodflat = whgood.flatten()
+                specslice = flatfull[:,whgoodflat]
+
+                errsum = []
+                for i in range(specslice.shape[0]):
+                    sl = specslice[i,:]
+
+                    if False not in np.isnan(sl):
+                        errsum.append(1.0)
+                        continue
+
+                    nans = np.isnan(sl)
+                    sl[nans] = -1
+                    gd = sl > 0
+                    #sigclip = stats.sigmaclip(sl[gd], low = 15, high = 10)[0]
+                    errsum.append(np.sqrt(np.sum(sl[gd]**2.0)))
+
+                self.errsum = np.array(errsum)
+            elif self.ellipse:
+                whgood = ellipse_region(self.cubeerr, self.ellipse[0], self.ellipse[1],\
+                        self.ellipse[2], self.ellipse[3], self.ellipse[4], \
+                        annulus = self.ellipse[4])
+                flatdata = self.cubedata.reshape(self.cubedata.shape[0],-1)
+                whgoodflat = whgood.flatten()
+                specslice = flatfull[:,whgoodflat]
+
+                errsum = []
+                for i in range(specslice.shape[0]):
+                    sl = specslice[i,:]
+
+                    if False not in np.isnan(sl):
+                        errsum.append(1.0)
+                        continue
+
+                    #masking and excluding NaNs
+                    nans = np.isnan(sl)
+                    sl[nans] = -1
+                    gd = sl > 0
+                    #sigclip = stats.sigmaclip(sl[gd], low = 15, high = 10)[0]
+                    errsum.append(np.sqrt(np.sum(sl[gd]**2)))
+
+                self.errsum = np.array(errsum)
 
         if mode == 'SEM':
             
@@ -302,10 +353,10 @@ class WIFISSpectrum():
             errarr = np.std(masterarr, axis = 0) / np.sqrt(masterarr.shape[0])
 
             #Setting the class values
-            self.cubeerr = errarr
+            self.errsum = errarr
             self.uncertainties = True
             
-    def extract_spectrum(self):
+    def extract_spectrum(self, kind = 'mean'):
         '''Function that extracts a telluric or science spectrum in the
         aperture provided.
         '''
@@ -319,74 +370,102 @@ class WIFISSpectrum():
 
         #Slicing telluric star, then taking the mean along the spatial axes.
         if self.limits:
-            specslice = self.cubedata[:,limits[0]:limits[1],limits[2]:limits[3]]
-            specmean = np.nanmean(specslice, axis=1)
-            specmean = np.nanmean(specmean, axis=1)
-            specmedian = np.nanmean(specslice, axis=1)
-            specmedian = np.nanmean(specmean, axis=1)
+            specslice = self.cubedata[:,self.limits[0]:self.limits[1],self.limits[2]:self.limits[3]]
+            specmean = np.nanmean(specslice, axis=(1,2))
+            specmedian = np.nanmedian(specslice, axis=(1,2))
+            specsum = np.nansum(specslice, axis=(1,2))
             
         elif self.circle:
-            whgood = circle_spec(self.cubedata, circle[0],circle[1],\
-                                 circle[2], annulus = circle[3])
+            
+            whgood = circle_spec(self.cubedata, self.circle[0],self.circle[1],\
+                                 self.circle[2], annulus = self.circle[3])
             flatfull = self.cubedata.reshape(self.cubedata.shape[0],-1)
             whgoodflat = whgood.flatten()
             specslice = flatfull[:,whgoodflat]
-                        
+            
             specmean = []
+            specmedian = []
+            specsum = []
             for i in range(specslice.shape[0]):
                 sl = specslice[i,:]
-                
+
                 if False not in np.isnan(sl):
                     specmean.append(1.0)
+                    specmedian.append(1.0)
+                    specsum.append(1.0)
                     continue
-                    
+
                 nans = np.isnan(sl)
                 sl[nans] = -1
                 gd = sl > 0
                 #sigclip = stats.sigmaclip(sl[gd], low = 15, high = 10)[0]
                 specmean.append(np.mean(sl[gd]))
-            
+                specmedian.append(np.median(sl[gd]))
+                specsum.append(np.sum(sl[gd]))
+
             specmean = np.array(specmean)
+            specmedian = np.array(specmedian)
+            specsum = np.array(specsum)
             #specmedian = np.nanmedian(specslice,axis=1)
             #specmean = np.nanmean(specmean, axis=1)
+                
         elif self.ellipse:
-            whgood = ellipse_region(self.cubedata, ellipse[0], ellipse[1],\
-                        ellipse[2], ellipse[3], ellipse[4], \
-                        annulus = ellipse[4])
+            whgood = ellipse_region(self.cubedata, self.ellipse[0], self.ellipse[1],\
+                        self.ellipse[2], self.ellipse[3], self.ellipse[4], \
+                        annulus = self.ellipse[4])
             flatdata = self.cubedata.reshape(self.cubedata.shape[0],-1)
             whgoodflat = whgood.flatten()
             specslice = flatfull[:,whgoodflat]
                         
             specmean = []
+            specmedian = []
+            specsum = []
             for i in range(specslice.shape[0]):
                 sl = specslice[i,:]
-                
+
                 if False not in np.isnan(sl):
                     specmean.append(1.0)
+                    specmedian.append(1.0)
+                    specsum.append(1.0)
                     continue
-                
+
                 #masking and excluding NaNs
                 nans = np.isnan(sl)
                 sl[nans] = -1
                 gd = sl > 0
                 #sigclip = stats.sigmaclip(sl[gd], low = 15, high = 10)[0]
                 specmean.append(np.mean(sl[gd]))
-            
+                specmedian.append(np.median(sl[gd]))
+                specsum.append(np.sum(sl[gd]))
+
             specmean = np.array(specmean)
+            specmedian = np.array(specmedian)
+            specsum = np.array(specsum)
             #specmedian = np.nanmedian(specslice,axis=1)
             #specmean = np.nanmean(specmean, axis=1)
             
         else:
             specslice = self.cubedata
-            specmean = np.nanmean(specslice, axis=1)
-            specmean = np.nanmean(specmean, axis=1)
-            specmedian = np.nanmean(specslice, axis=1)
-            specmedian = np.nanmean(specmean, axis=1)
+            specmean = np.nanmean(specslice, axis=(1,2))
+            specmedian = np.nanmean(specslice, axis=(1,2))
+            specsum = np.nansum(specslice, axis = (1,2))
 
-        self.spectrum = specmean
+        if kind == 'mean':
+            self.spectrum = specmean
+            self.spectrummedian = specmedian
+            self.spectrumsum = specsum
+        elif kind == 'median':
+            self.spectrum = specmedian
+            self.spectrumsum = specsum
+            self.spectrummean = specmean
+        else:
+            self.spectrum = specsum
+            self.spectrummedian = specmedian
+            self.spectrummean = specmean
+        
         self.extracted = True
 
-    def plotSpectra(self):
+    def plotSpectrum(self):
 
         if self.extracted:
             fig, axes = mpl.subplots(figsize = (15,10))
@@ -406,7 +485,7 @@ class WIFISSpectrum():
                     one axis of a multi-axis image.'''
         
         if not subimage:
-            cubewcs = wcs.WCS(self.cubehead)
+            cubewcs = wcs.WCS(self.cubehead, naxis=2)
 
             fig = mpl.figure(figsize = (12,10))
             gs = gridspec.GridSpec(1,1)
@@ -475,7 +554,7 @@ class WIFISSpectrum():
             mpl.show() 
         
         else:
-            cubewcs = wcs.WCS(self.cubehead)
+            cubewcs = wcs.WCS(self.cubehead, naxis=2)
 
             self.plotax = mpl.subplot(subimage, projection = cubewcs)
 
@@ -565,77 +644,3 @@ class WIFISSpectrum():
             print("Wrote to "+self.cubefile[:-5]+'_extracted_'+suffix+'.fits')
         except:
             print("There was a problem saving the spectrum")
-        
-#   def centroid_finder(self, objtype):
-
-#       if objtype == 'target':
-#           img = self.galim
-#       else:
-#           img = self.tellim
-#       
-#       imgsize = img.shape
-
-#       #find bright pixels
-#       imgmedian = np.median(img)
-#       #print "MEDIAN: %f, MEAN: %f" % (imgmedian, np.mean(img))
-#       imgstd = np.std(img[img < 2000])
-#       nstd = 4.0
-#       #print "IMG MEAN: %f\nIMGSTD: %f\nCUTOFF: %f" % (imgmedian, imgstd,imgmedian+nstd*imgstd)
-
-#       brightpix = np.where(img >= imgmedian + nstd*imgstd)
-#       new_img = np.zeros(imgsize)
-
-#       if len(brightpix) == 0:
-#           return False
-
-#       for i in range(len(brightpix[0])):
-#           new_img[brightpix[0][i],brightpix[1][i]] = 1.0
-
-#       stars = []
-#       for x in range(imgsize[0]):
-#           for y in range(imgsize[1]):
-#               if new_img[x,y] == 1:
-#                   new_star, new_img = explore_region(x,y,new_img)
-#                   if len(new_star[0]) >=3: #Check that the star is not just a hot pixel
-#                       stars.append(new_star)
-#       
-#       centroidx, centroidy, Iarr  = [],[],[]
-#       for star in stars:
-#           xsum, ysum, Isum = 0.,0.,0.
-#           sat = False
-#           for i in range(len(star[0])):
-#               x = star[0][i]
-#               y = star[1][i]
-#               I = img[x,y]
-#               xsum += x*I
-#               ysum += y*I
-#               Isum += I
-#           
-#           centroidx.append(xsum/Isum)
-#           centroidy.append(ysum/Isum)
-#           Iarr.append(Isum)
-
-#           gx0 = centroidx[-1] - 10
-#           gx1 = centroidx[-1] + 10
-#           gy0 = centroidy[-1] - 10
-#           gy1 = centroidy[-1] + 10
-
-#           if centroidx[-1] < 10:
-#               gx0 = 0
-#           if centroidx[-1] > imgsize[0]-11:
-#               gx1 = imgsize[0]-1
-#           
-#           if centroidy[-1] < 10:
-#               gy0 = 0
-#           if centroidy[-1] > imgsize[1]-11:
-#               gy1 = imgsize[1]-1
-#           
-#           gx = img[int(gx0):int(gx1),int(centroidy[-1])]
-#           gy = img[int(centroidx[-1]), int(gy0):int(gy1)]
-#           xs = range(len(gx))
-#           ys = range(len(gy))
-#       print("Calculated centroids for ", objtype)
-#       print(centroidx)
-#       print(centroidy)
-
-#       return [centroidx,centroidy,Iarr]

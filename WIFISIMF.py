@@ -13,23 +13,49 @@ from astropy.visualization import (PercentileInterval, LinearStretch,
                                     ImageNormalize, ZScaleInterval)
 
 import WIFISTelluric as WT
+import WIFISSpectrum as WS
 
 
-class WIFISIMF(WT.WIFISSpectrum):
+def convolvemodels(wlfull, datafull, veldisp):
 
-    def __init__(self, galfile, tellfile, z, veldisp, mode='lines'):
-        super().__init__(galfile, tellfile, z, veldisp)
+    reg = (wlfull >= 9500) & (wlfull <= 13500)
+    
+    wl = wlfull[reg]
+    data = datafull[reg]
+
+    c = 299792.458
+
+    #Sigma from description of models
+    m_center = 11500
+    m_sigma = np.abs((m_center / (1 + 100./c)) - m_center)
+    f = m_center + m_sigma
+    v = c * ((f/m_center) - 1)
+    
+    sigma_gal = np.abs((m_center / (veldisp/c + 1.)) - m_center)
+    sigma_conv = np.sqrt(sigma_gal**2. - m_sigma**2.)
+
+    convolvex = np.arange(-5*sigma_conv,5*sigma_conv, 2.0)
+    gaussplot = gf.gauss_nat(convolvex, [sigma_conv,0.])
+
+    out = np.convolve(datafull, gaussplot, mode='same')
+
+    return out
+
+
+####################################################################
+class WIFISIMF(WT.WIFISTelluric):
+
+    def __init__(self, target, telluric, veldisp, mode='lines'):
+        super().__init__(target, telluric)
         
         if mode == 'lines':
             
-            
             self.pa_raw = False
-        
-
-        
+            self.veldisp = veldisp
+            
     def plotIMFLines(self, kind = 'Full', continuum = False, mask = [], save=False, gal='M85'):
         
-        if not self.reducedspectrum:
+        if not self.reduced:
             print("Spectrum not reduced. Please remove telluric lines first.")
             return
         
@@ -62,11 +88,13 @@ class WIFISIMF(WT.WIFISSpectrum):
         fig, axes = mpl.subplots(2,4,figsize = (16,6.5))
         axes = axes.flatten()
         
-        wl = self.galwl / (1+self.z)
+        wl = self.target.cubewlz
         #wl = self.galwl / (1+0.002435)
 
-        mfl1 = '/Users/relliotmeyer/Thesis_Work/ssp_models/vcj_ssp/VCJ_v8_mcut0.08_t13.5_Zp0.0.ssp.imf_varydoublex.s100'
-        mfl2 = '/Users/relliotmeyer/Thesis_Work/ssp_models/atlas/atlas_ssp_t13_Zp0.0.abund.krpa.s100'
+        mfl1 = '/Users/relliotmeyer/Thesis_Work/ssp_models/vcj_ssp/'+\
+                'VCJ_v8_mcut0.08_t13.5_Zp0.0.ssp.imf_varydoublex.s100'
+        mfl2 = '/Users/relliotmeyer/Thesis_Work/ssp_models/atlas/'+\
+                'atlas_ssp_t13_Zp0.0.abund.krpa.s100'
         #model2 = np.loadtxt('/Users/relliotmeyer/Thesis_Work/ssp_models/vcj_ssp/VCJ_v8_mcut0.08_t13.5_Zp0.0.ssp.imf_varydoublex.s100')
 
         model = pd.read_table(mfl1, delim_whitespace = True, header=None)
@@ -86,27 +114,27 @@ class WIFISIMF(WT.WIFISSpectrum):
 
         #mspec = WT.convolvemodels(mwl, mspec, 140.)
         #mspec2 = WT.convolvemodels(mwl, mspec2, 140.)
-        mspec = WT.convolvemodels(mwl, mspec, self.veldisp)
-        mspec2 = WT.convolvemodels(mwl, mspec2, self.veldisp)
+        mspec = convolvemodels(mwl, mspec, self.veldisp)
+        mspec2 = convolvemodels(mwl, mspec2, self.veldisp)
 
         if kind == 'Full':
-            data = self.FinalSpec
+            data = self.reducedspectrum
         elif kind == 'Raw':
-            data = self.galspec
+            data = self.target.spectrum
         
         for i in range(len(self.linelow)):
             wh = np.where((wl >= self.bluelow[i]) & (wl <= self.redhigh[i]))[0]
             wlslice = wl[wh]
             if (self.line_name[i] == 'Pa Beta') and self.pa_raw:
                 print('Non-telluric PaB enabled')
-                dataslice = self.galspec[wh]
+                dataslice = self.target.spectrum[wh]
             else:
                 dataslice = data[wh] #/ np.median(data[wh])
                 
             #errslice = err[wh] / np.median(data[wh])
             polyfit, regions = self.removeLineSlope(wlslice, dataslice, i)
             dataslice /= polyfit(wlslice)
-            errslice = self.galerr[wh]/polyfit(wlslice)
+            errslice = self.target.cubeerr[wh]/polyfit(wlslice)
 
 
             whm = np.where((mwl >= self.bluelow[i]) & (mwl <= self.redhigh[i]))[0]
@@ -176,17 +204,16 @@ class WIFISIMF(WT.WIFISSpectrum):
         for i in range(len(self.linelow)):
             fig, axes = mpl.subplots(figsize = (7,5))
             
-            twl = self.tellwl / (1. + self.z)
+            twl = self.telluric.cubewl / (1. + self.z)
             
             fp = np.where((twl >= self.bluelow[i]) & (twl <= self.redhigh[i]))[0]
-            axes.plot(twl[fp], self.TellSpecReduced[fp]/np.median(self.TellSpecReduced[fp]),\
-                      label='Telluric')
+            axes.plot(twl[fp], WS.norm(self.tellspecreduced[fp]), label='Telluric')
             
-            gwl = self.galwl / (1. + self.z)
+            gwl = self.target.cubewlz
             
             fp = np.where((gwl >= self.bluelow[i]) & (gwl <= self.redhigh[i]))[0]
-            axes.plot(gwl[fp], self.galspec[fp]/np.median(self.galspec[fp]), label='Gal')
-            axes.plot(gwl[fp], self.FinalSpec[fp]/np.median(self.FinalSpec[fp]), label='GalRed')
+            axes.plot(gwl[fp], WS.norm(self.target.spectrum[fp]), label='Target')
+            axes.plot(gwl[fp], WS.norm(self.reducedspectrum[fp]), label='Target Reduced')
             
             mpl.legend()
             mpl.show()
