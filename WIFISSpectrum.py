@@ -15,7 +15,7 @@
 ########################################
 
 import pandas as pd
-from scipy.interpolate import interp1d
+from scipy.interpolate import interp1d, interp2d
 from scipy import stats
 import numpy as np
 from astropy.io import fits
@@ -28,7 +28,6 @@ from matplotlib.ticker import (MultipleLocator, FormatStrFormatter,
 import matplotlib.gridspec as gridspec
 
 from glob import glob
-import gaussfit as gf
 import os
 
 from astropy.visualization import (PercentileInterval, LinearStretch,
@@ -71,7 +70,7 @@ def circle_spec(spec, x0, y0, radius, annulus = False):
     # return the mask
     return whgood
 
-def ellipse_region(cube, center, a, ecc, theta, annular = False):
+def ellipse_region(cube, center, a, ecc, theta, annulus = False):
     ''' Function that returns a mask that defines the elements that lie
         within an ellipsoidal region. The ellipse can also be annular.
         
@@ -84,7 +83,7 @@ def ellipse_region(cube, center, a, ecc, theta, annular = False):
                      rotating clockwise. 
             
         Optional Inputs:
-            annular: False if just simple ellipse, otherwise is the INNER
+            annulus: False if just simple ellipse, otherwise is the INNER
                      annular radius (spaxels)
         
     '''
@@ -92,25 +91,34 @@ def ellipse_region(cube, center, a, ecc, theta, annular = False):
     # Define angle, eccentricity term, and semi-minor axis
     an = Angle(theta, 'deg')
     e = np.sqrt(1 - (ecc**2))
-    b = a * ecc
+    b = a * e
     
     # Create outer ellipse
     ell_region = Ellipse2D(amplitude=10, x_0 = center[0], y_0 = center[1],\
                 a=a, b=b, theta=an.radian)
+    x,y = np.mgrid[0:cube.shape[1], 0:cube.shape[2]]
+    ell_good = ell_region(x,y)
     
-    if annular:
+    if annulus:
         # Define inner ellipse parameters and then create inner mask
-        a2 = annular
-        b2 = a2 * ecc
+        a2 = annulus
+        b2 = a2 * e
+
         ell_region_inner = Ellipse2D(amplitude=10, x_0 = center[0],\
                 y_0 = center[1], a=a2, b=b2, theta=an.radian)
         
         # Set region of outer mask and within inner ellipse to zero, leaving
         # an annular elliptical region
-        ell_region[ell_region_inner > 0] = 0
+        ell_inner_good = ell_region_inner(x,y)
+        ell_good[ell_inner_good > 0] = 0
+        
+    #fig, ax = mpl.subplots(figsize = (12,7))
+    #mpl.imshow(np.nansum(cube, axis = 0), origin = 'lower', interpolation = None)
+    #mpl.imshow(ell_good, alpha=0.2, origin = 'lower', interpolation = None)
+    #mpl.show()
     
     # Return the mask
-    return ell_region
+    return np.array(ell_good, dtype = bool)
 
 def fwhm2sigma(fwhm):
     ''' Quick function to convert a gaussian fwhm to a standard deviation.'''
@@ -153,31 +161,6 @@ def create_vega_con():
     c = np.where((x_vals >= 8000) & (x_vals <= 13500))[0]
     var = zip(x_vals[c], (smoothed_by_convolving/210000)[c])
     np.savetxt("vega-con-new.txt", var)
-    
-def convolvemodels(wlfull, datafull, veldisp):
-
-    reg = (wlfull >= 9500) & (wlfull <= 13500)
-    
-    wl = wlfull[reg]
-    data = datafull[reg]
-
-    c = 299792.458
-
-    #Sigma from description of models
-    m_center = 11500
-    m_sigma = np.abs((m_center / (1 + 100./c)) - m_center)
-    f = m_center + m_sigma
-    v = c * ((f/m_center) - 1)
-    
-    sigma_gal = np.abs((m_center / (veldisp/c + 1.)) - m_center)
-    sigma_conv = np.sqrt(sigma_gal**2. - m_sigma**2.)
-
-    convolvex = np.arange(-5*sigma_conv,5*sigma_conv, 2.0)
-    gaussplot = gf.gauss_nat(convolvex, [sigma_conv,0.])
-
-    out = np.convolve(datafull, gaussplot, mode='same')
-
-    return out
 
 ###################################
 
@@ -193,8 +176,9 @@ class WIFISSpectrum():
         z:          the redshift of the target object'''
 
         self.cubefile = cubefile
-        cubebase = self.cubefile.split('/')[:-1]
-        self.cubebasepath = '/'.join(cubebase) + '/'
+        cubesplit = self.cubefile.split('/')
+        self.cubename = ' '.join(cubesplit[-1][:-5].split('_'))
+        self.cubebasepath = '/'.join(cubesplit[:-1]) + '/'
 
         # Extract cube data and header
         cubeff = fits.open(self.cubefile)
@@ -226,7 +210,7 @@ class WIFISSpectrum():
         self.extracted = False
         self.uncertainties = False
         
-    def get_uncertainties(self, mode = 'Direct'):
+    def getUncertainties(self, mode = 'Shift', plot=False):
         '''Function that estimates uncertainties in two possible fashions:
         
         1 - Direct) Directly determines the noise in the extracted region 
@@ -240,127 +224,94 @@ class WIFISSpectrum():
                     observations are 10+. Not sure if this is reliable for 
                     WIFIS data'''
         
+        #Checking to see if spectrum is extracted
+        if not self.extracted:
+            print("Need to extract spectrum to derive uncertainties...")
+            return
+        
         if mode == 'Direct':
             
             # Get cube integration time
             inttime = self.cubehead['INTTIME']
             gain = 1.33            
-            datasqrt = np.sqrt(data * inttime * gain)
+            #datasqrt = np.sqrt(self.cubedata * inttime * gain)
+            datasqrt = self.cubedata * inttime * gain
+            datasqrt[np.isnan(datasqrt)] = 0.0
             
             try:
                 skyfls = glob(self.cubebasepath + '*_sky_cube.fits')
                 skyff = fits.open(skyfls[0])
                 skydata = skyff[0].data
                 skyhead = skyff[0].header
-                skyflat = np.nanmedian(skydata.reshape(skydata.shape[0],-1),\
-                                       axis = 1)
+                skyflat = skydata.reshape(skydata.shape[0],-1)
+                #skyflat = np.nanmedian(skydata.reshape(skydata.shape[0],-1),\
+                #                       axis = 1)
+                skyflat[np.isnan(skyflat)] = 0
                 
                 pixel = np.arange(skydata.shape[0]) + 1.0
                 skywl = pixel*skyhead['CDELT3'] + skyhead['CRVAL3']
                 skywl *= 1e10
-                skyinterp = np.interp(self.cubewl, skywl, skydata,\
-                                      left = 0.1, right = 0.1)
+                
+                xx = np.arange(skyflat.shape[1])
+                skyinterp = interp2d(xx, skywl, skyflat, kind='cubic', fill_value=0.1)
+                skytarget = skyinterp(xx, self.cubewl).reshape(self.cubedata.shape)
                 
             except:
                 print('### Problem finding and processing sky cubes,'+\
                       ' are they in the same directory as the merged cube?')
-                skyinterp = np.ones(data.shape) * 8.0
+                skytarget = np.ones(self.cubedata.shape) * 8.0
             
-            skysqrt = np.sqrt(skyflat * inttime * gain)
+            #skysqrt = np.sqrt(skytarget * inttime * gain)
+            skysqrt = 2 * skytarget * inttime * gain
+            skysqrt[np.isnan(skysqrt)] = 0.0
             
             #thermalsqrt = np.sqrt(0.22 * inttime * gain)
             thermalsqrt = 0
             
-            noise = np.sqrt(datasqrt**2.0 + skysqrt**2.0 + thermalsqrt**2.0)
+            #noise = np.sqrt(datasqrt**2.0 + skysqrt**2.0 + thermalsqrt**2.0)
+            noise = np.sqrt(datasqrt + skysqrt + thermalsqrt)
             
-            self.cubeerr = noise
+            self.cubenoise = noise
             self.uncertainties = True
             
-            if self.limits:
-                specslice = self.cubeerr[:,self.limits[0]:self.limits[1],\
-                                          self.limits[2]:self.limits[3]]
-                self.errsum = np.sqrt(np.nansum(specslice**2.0, axis=(1,2)))
-            elif self.circle:
-                whgood = circle_spec(self.cubeerr, self.circle[0],self.circle[1],\
-                                 self.circle[2], annulus = self.circle[3])
-                flatfull = self.cubeerr.reshape(self.cubeerr.shape[0],-1)
-                whgoodflat = whgood.flatten()
-                specslice = flatfull[:,whgoodflat]
-
-                errsum = []
-                for i in range(specslice.shape[0]):
-                    sl = specslice[i,:]
-
-                    if False not in np.isnan(sl):
-                        errsum.append(1.0)
-                        continue
-
-                    nans = np.isnan(sl)
-                    sl[nans] = -1
-                    gd = sl > 0
-                    #sigclip = stats.sigmaclip(sl[gd], low = 15, high = 10)[0]
-                    errsum.append(np.sqrt(np.sum(sl[gd]**2.0)))
-
-                self.errsum = np.array(errsum)
-            elif self.ellipse:
-                whgood = ellipse_region(self.cubeerr, self.ellipse[0], self.ellipse[1],\
-                        self.ellipse[2], self.ellipse[3], self.ellipse[4], \
-                        annulus = self.ellipse[4])
-                flatdata = self.cubedata.reshape(self.cubedata.shape[0],-1)
-                whgoodflat = whgood.flatten()
-                specslice = flatfull[:,whgoodflat]
-
-                errsum = []
-                for i in range(specslice.shape[0]):
-                    sl = specslice[i,:]
-
-                    if False not in np.isnan(sl):
-                        errsum.append(1.0)
-                        continue
-
-                    #masking and excluding NaNs
-                    nans = np.isnan(sl)
-                    sl[nans] = -1
-                    gd = sl > 0
-                    #sigclip = stats.sigmaclip(sl[gd], low = 15, high = 10)[0]
-                    errsum.append(np.sqrt(np.sum(sl[gd]**2)))
-
-                self.errsum = np.array(errsum)
-
-        if mode == 'SEM':
+            errmean, errmedian, self.cubeerr = self.extractRegion(self.cubenoise, square_errors = True)
             
-            #Checking to see if spectrum is extracted
-            if not self.extracted:
-                print("Need to extract spectrum to derive uncertainties...")
-                return
-
-            #Getting the filepaths -- assumes the individual exposures are 
-            #within the merged cube directory as standard by the WIFIS Pipeline
-            tarfls = glob(self.cubebasepath + '*_obs_cube.fits')
-
-            #Extracting the spectra
-            masterarr = []
-            for i,fl in enumerate(tarfls):
-                wl, spec, head = self.extract_spectrum(fl, tartype)
-
-                # Interpolating the spectra onto the same wavelength grid as
-                # median galaxy
-                galinterp = np.interp(self.galwl, wl, spec, left = 0, right = 0)
-                masterarr.append(galinterp)
-
-            #Calculating the uncertainties
-            masterarr = np.array(masterarr)
-            errarr = np.std(masterarr, axis = 0) / np.sqrt(masterarr.shape[0])
+        elif mode == 'SEM':
+            
+            #Setting the class values
+            self.cubenoise = self.calcErrors()
+            self.uncertainties = True
+        
+        elif mode == 'Shift':
+            
+            #Setting the class values
+            self.cubenoise = self.calcErrors(shift=True)
+            self.uncertainties = True
+        
+        elif mode == 'ShiftMedian':
 
             #Setting the class values
-            self.errsum = errarr
+            self.cubenoise = self.calcErrorsFinalCube()
             self.uncertainties = True
             
-    def extract_spectrum(self, kind = 'mean'):
+        if plot:
+            fig, ax = mpl.subplots(figsize = (12,7))
+            ax.plot(self.cubewl, self.cubenoise, label=mode)
+            ax.set_title('Uncertanties '+ self.cubename, fontsize = 15)
+            ax.set_xlabel('Error Value', fontsize = 15)
+            ax.set_ylabel("Wavelength (A)", fontsize = 15)
+            ax.tick_params(labelsize = 15)
+            ax.legend()
+            mpl.show()
+            
+    def extractSpectrum(self, kind = 'mean'):
         '''Function that extracts a telluric or science spectrum in the
         aperture provided.
         '''
 
+        inttime = self.cubehead['INTTIME']
+        gain = 1.33
+        
         if (self.limits == False) and (self.circle == False) and \
           (self.ellipse == False):
             print("Extraction limits not set. Please set the "+\
@@ -369,113 +320,42 @@ class WIFISSpectrum():
             return
 
         #Slicing telluric star, then taking the mean along the spatial axes.
-        if self.limits:
-            specslice = self.cubedata[:,self.limits[0]:self.limits[1],self.limits[2]:self.limits[3]]
-            specmean = np.nanmean(specslice, axis=(1,2))
-            specmedian = np.nanmedian(specslice, axis=(1,2))
-            specsum = np.nansum(specslice, axis=(1,2))
-            
-        elif self.circle:
-            
-            whgood = circle_spec(self.cubedata, self.circle[0],self.circle[1],\
-                                 self.circle[2], annulus = self.circle[3])
-            flatfull = self.cubedata.reshape(self.cubedata.shape[0],-1)
-            whgoodflat = whgood.flatten()
-            specslice = flatfull[:,whgoodflat]
-            
-            specmean = []
-            specmedian = []
-            specsum = []
-            for i in range(specslice.shape[0]):
-                sl = specslice[i,:]
-
-                if False not in np.isnan(sl):
-                    specmean.append(1.0)
-                    specmedian.append(1.0)
-                    specsum.append(1.0)
-                    continue
-
-                nans = np.isnan(sl)
-                sl[nans] = -1
-                gd = sl > 0
-                #sigclip = stats.sigmaclip(sl[gd], low = 15, high = 10)[0]
-                specmean.append(np.mean(sl[gd]))
-                specmedian.append(np.median(sl[gd]))
-                specsum.append(np.sum(sl[gd]))
-
-            specmean = np.array(specmean)
-            specmedian = np.array(specmedian)
-            specsum = np.array(specsum)
-            #specmedian = np.nanmedian(specslice,axis=1)
-            #specmean = np.nanmean(specmean, axis=1)
-                
-        elif self.ellipse:
-            whgood = ellipse_region(self.cubedata, self.ellipse[0], self.ellipse[1],\
-                        self.ellipse[2], self.ellipse[3], self.ellipse[4], \
-                        annulus = self.ellipse[4])
-            flatdata = self.cubedata.reshape(self.cubedata.shape[0],-1)
-            whgoodflat = whgood.flatten()
-            specslice = flatfull[:,whgoodflat]
-                        
-            specmean = []
-            specmedian = []
-            specsum = []
-            for i in range(specslice.shape[0]):
-                sl = specslice[i,:]
-
-                if False not in np.isnan(sl):
-                    specmean.append(1.0)
-                    specmedian.append(1.0)
-                    specsum.append(1.0)
-                    continue
-
-                #masking and excluding NaNs
-                nans = np.isnan(sl)
-                sl[nans] = -1
-                gd = sl > 0
-                #sigclip = stats.sigmaclip(sl[gd], low = 15, high = 10)[0]
-                specmean.append(np.mean(sl[gd]))
-                specmedian.append(np.median(sl[gd]))
-                specsum.append(np.sum(sl[gd]))
-
-            specmean = np.array(specmean)
-            specmedian = np.array(specmedian)
-            specsum = np.array(specsum)
-            #specmedian = np.nanmedian(specslice,axis=1)
-            #specmean = np.nanmean(specmean, axis=1)
-            
-        else:
-            specslice = self.cubedata
-            specmean = np.nanmean(specslice, axis=(1,2))
-            specmedian = np.nanmean(specslice, axis=(1,2))
-            specsum = np.nansum(specslice, axis = (1,2))
+        specmean, specmedian, specsum = self.extractRegion(self.cubedata)
 
         if kind == 'mean':
             self.spectrum = specmean
             self.spectrummedian = specmedian
             self.spectrumsum = specsum
+            self.spectype = 'mean'
         elif kind == 'median':
             self.spectrum = specmedian
             self.spectrumsum = specsum
             self.spectrummean = specmean
+            self.spectype = 'median'
         else:
             self.spectrum = specsum
             self.spectrummedian = specmedian
             self.spectrummean = specmean
+            self.spectype = 'sum'
         
         self.extracted = True
 
     def plotSpectrum(self):
 
         if self.extracted:
-            fig, axes = mpl.subplots(figsize = (15,10))
-            axes.plot(self.cubewl, self.spectrum, label='Mean')
+            fig, axes = mpl.subplots(figsize = (13,7))
+            axes.set_title("Extracted Spectrum "+self.cubename, fontsize=15)
+            axes.set_ylabel('Wavelength (A)', fontsize = 15)
+            axes.set_xlabel("Flux", fontsize = 15)
+            axes.tick_params(labelsize = 15)
+            axes.plot(self.cubewl, self.spectrum, label=self.spectype)
             axes.minorticks_on()
+            mpl.legend()
             mpl.show()
         else:
             print("Spectrum not extracted yet")
     
-    def plotImage(self, subimage = False):
+    def plotImage(self, subimage = False, title=False):
         '''Produces a plot of the cube image with the defined regions overlaid. Axes should be 
         in celestial coordinates.
         
@@ -551,6 +431,9 @@ class WIFISSpectrum():
             lat.display_minor_ticks(True)
             lon.display_minor_ticks(True)
 
+            if title:
+                ax1.set_title(title)
+            
             mpl.show() 
         
         else:
@@ -580,23 +463,25 @@ class WIFISSpectrum():
                     self.plotax.add_patch(circ)
             if self.ellipse:
                 # [x0,y0,theta,a,e, annulus]
+                e = np.sqrt(1 - (self.ellipse[4]**2))
+                an = Angle(self.ellipse[2], 'deg')
+
                 if self.ellipse[5]:
-                    an = Angle(ellipse[2], 'deg')
-                    b = ellipse[3] * ellipse[4]
+                    b = self.ellipse[3] * e
                     
                     el1 = patches.Ellipse((self.ellipse[1],self.ellipse[0]),\
                         2*self.ellipse[3], 2*b, angle = -an.degree + 90, \
                         linewidth=2, edgecolor='m', facecolor='none')
                     self.plotax.add_patch(el1)
                     
-                    b2 = ellipse[5] * ellipse[4]
+                    b2 = self.ellipse[5] * e
                     el2 = patches.Ellipse((self.ellipse[1],self.ellipse[0]),\
                         2*self.ellipse[5], 2*b2, angle = -an.degree + 90, \
-                        linewidth=2, edgecolor='m',facecolor='none')
-                    self.plotax.add_patch(cl2)
+                        linewidth=2, edgecolor='r',facecolor='none')
+                    self.plotax.add_patch(el2)
                 else:
-                    an = Angle(ellipse[2], 'deg')
-                    b = ellipse[3] * ellipse[4]
+                    an = Angle(self.ellipse[2], 'deg')
+                    b = self.ellipse[3] * e
                     
                     el1 = patches.Ellipse((self.ellipse[1],self.ellipse[0]),\
                         2*self.ellipse[3], 2*b, angle = -an.degree + 90, \
@@ -616,8 +501,11 @@ class WIFISSpectrum():
             lat.set_ticklabel_position('lb')
             lat.display_minor_ticks(True)
             lon.display_minor_ticks(True)
+            self.plotax.set_xlabel('Decl', fontsize = 15)
+            self.plotax.set_ylabel('R.A.', fontsize = 15)
+            
     
-    def write_spectrum(self, suffix=''):
+    def writeSpectrum(self, suffix=''):
         '''Function that writes the final reduced spectrum to file. Must have created a reduced spectrum first.
         
         If there is no reduced spectrum an extracted spectrum will be written instead.
@@ -644,3 +532,271 @@ class WIFISSpectrum():
             print("Wrote to "+self.cubefile[:-5]+'_extracted_'+suffix+'.fits')
         except:
             print("There was a problem saving the spectrum")
+    
+    def extractRegion(self, data, inttime = 1, gain = 1, square_errors = False):
+        
+        if self.limits:
+            specslice = data[:,self.limits[0]:self.limits[1],self.limits[2]:self.limits[3]]
+            specmean = np.nanmean(specslice, axis=(1,2)) #* inttime * gain
+            specmedian = np.nanmedian(specslice, axis=(1,2)) #* inttime * gain
+            specsum = np.nansum(specslice, axis=(1,2)) #* inttime * gain
+            
+            if square_errors:
+                specsum = np.sqrt(np.sum(specslice**2.0, axis = (1,2)))
+            
+        elif self.circle:
+            
+            whgood = circle_spec(data, self.circle[0],self.circle[1],\
+                                 self.circle[2], annulus = self.circle[3])
+            flatdata = data.reshape(data.shape[0],-1)
+            whgoodflat = whgood.flatten()
+            specslice = flatdata[:,whgoodflat]
+            
+            #nans = np.isnan(specslice)
+            #specslice[nans] = -1
+            #gd = specslice > 0
+            #specmean = np.mean(specslice[gd], axis = 1)
+            #specmedian = np.median(specslice[gd], axis = 1)
+            #specsum = np.sum(specslice[gd], axis = 1)
+            
+            specmean = np.nanmean(specslice, axis = 1)
+            specmedian = np.nanmedian(specslice, axis = 1)
+            specsum = np.nansum(specslice, axis = 1)
+
+            if square_errors:
+                #specsum = np.sqrt(np.sum(specslice[gd]**2.0, axis = 1))
+                specsum = np.sqrt(np.sum(specslice**2.0, axis = 1))
+                
+        elif self.ellipse:
+            whgood = ellipse_region(data, (self.ellipse[0], self.ellipse[1]),\
+                        self.ellipse[3], self.ellipse[4], self.ellipse[2], \
+                        annulus = self.ellipse[5])
+            flatdata = data.reshape(data.shape[0],-1)
+            whgoodflat = whgood.flatten()
+            specslice = flatdata[:,whgoodflat]
+            
+            specmean = np.nanmean(specslice, axis = 1)
+            specmedian = np.nanmedian(specslice, axis = 1)
+            specsum = np.nansum(specslice, axis = 1)
+            
+            if square_errors:
+                specsum = np.sqrt(np.nansum(specslice**2.0, axis = 1))
+            
+        else:
+            specslice = data
+                                  
+            specmean = np.nanmean(specslice, axis=(1,2)) #* inttime * gain
+            specmedian = np.nanmean(specslice, axis=(1,2)) #* inttime * gain
+            specsum = np.nansum(specslice, axis = (1,2)) #* inttime * gain
+                                  
+            if square_errors:
+                specsum = np.sqrt(np.sum(specslice**2.0, axis = (1,2)))
+
+            
+        return specmean, specmedian, specsum
+    
+    def skyFix(self):
+        
+        try:
+            skyfls = glob(self.cubebasepath + '*_sky_cube.fits')
+            skyff = fits.open(skyfls[0])
+            self.skydata = skyff[0].data
+            self.skyhead = skyff[0].header
+            skyflat = self.skydata.reshape(self.skydata.shape[0],-1)
+            skyflat[np.isnan(skyflat)] = 0
+
+            pixel = np.arange(self.skydata.shape[0]) + 1.0
+            self.skywl = pixel*self.skyhead['CDELT3'] + self.skyhead['CRVAL3']
+            self.skywl *= 1e10
+
+            xx = np.arange(skyflat.shape[1])
+            skyinterp = interp2d(xx, self.skywl, skyflat, kind='cubic', fill_value=0.1)
+            skytarget = skyinterp(xx, self.cubewl + 1).reshape(self.cubedata.shape)
+        except Exception as e:
+            print(e)
+            print('### Problem finding and processing sky cubes,'+\
+                  ' are they in the same directory as the merged cube?')
+            return
+        
+        self.skymean, self.skymedian, self.skysum = self.extractRegion(skytarget)
+        
+        if self.extracted:
+            reg = (12500 <= self.cubewl) & (13000 >= self.cubewl)
+            fig,ax = mpl.subplots(figsize = (12,7))
+            ax.plot(self.cubewl[reg], norm(self.spectrum[reg]),\
+                    label='Spectrum')
+            ax.plot(self.cubewl[reg], norm(self.skysum[reg]),\
+                    label='Sky')
+            mpl.legend()
+            mpl.show()
+            
+            skycorr = 0.17
+
+            reg = (12500 <= self.cubewl) & (13000 >= self.cubewl)
+            fig,ax = mpl.subplots(figsize = (12,7))
+            ax.plot(self.cubewl[reg], norm(self.spectrum[reg]),\
+                    label='Spectrum')
+            ax.plot(self.cubewl[reg], norm(self.spectrum[reg]*(norm(self.skysum[reg]**skycorr))),\
+                    label='ratio')
+            mpl.legend()
+            mpl.show()
+            
+            
+            #for i in np.arange(-5,5,0.2):
+            #    skycorr = i
+
+            #    fig,ax = mpl.subplots(figsize = (12,7))
+                #ax.plot(self.cubewl[reg], norm(self.spectrum[reg]),\
+                #        label='Spectrum')
+                #ax.plot(self.cubewl[reg], \
+                #        norm(self.spectrum[reg]*(norm(skysum[reg])*skycorr)),\
+                #        label='SkyCorr')
+            #    ax.plot(self.cubewl[reg], \
+            #            norm(skysum[reg])*skycorr, label='SkyCorr')
+
+            #    mpl.legend()
+            #    mpl.show()
+            
+        else:
+            print("Spectrum not extracted yet, can't compare")
+            return
+        
+    def compareErrors(self, savefig=False):
+        
+        #fig,ax = mpl.subplots(figsize = (12,7))            
+        #inttime = self.cubehead['INTTIME']
+        #gain = 1.33            
+
+        errold = self.calcErrors(savefig=savefig)
+        errshift = self.calcErrors(shift=True,savefig=savefig)
+        errshiftmedian = self.calcErrorsFinalCube(savefig=savefig)
+        
+        errold[errold == 0] = 0.001
+        errshift[errshift == 0] = 0.001
+        errshiftmedian[errshiftmedian == 0] = 0.001
+
+        fig,ax = mpl.subplots(figsize = (12,7))
+        mpl.plot(self.cubewl, errold, label = 'Old')
+        mpl.plot(self.cubewl, errshift, label = 'Shifted Cubes')
+        mpl.plot(self.cubewl, errshiftmedian, label = 'Shifted Median')
+        ax.set_title("Errors Comparison")
+        #mpl.plot(self.cubewl, self.spectrummean/(inttime*gain*err), label='Rolling')
+        #mpl.plot(self.cubewl, self.spectrum/self.errsum, label='Direct')
+        ax.set_ylim((0,0.4))
+        mpl.legend(fontsize = 15)
+        ax.tick_params(labelsize=15)
+        mpl.savefig('/Users/relliotmeyer/Desktop/Errors_'+savefig+'.png', dpi=300)
+        mpl.show()
+        
+        fig,ax = mpl.subplots(figsize = (12,7))
+        mpl.plot(self.cubewl, self.spectrum/errold, label = 'Old')
+        mpl.plot(self.cubewl, self.spectrum/errshift, label = 'Shifted Cubes')
+        mpl.plot(self.cubewl, self.spectrum/errshiftmedian, label = 'Shifted Median')
+        ax.set_title("SNR Comparison")
+        #mpl.plot(self.cubewl, self.spectrummean/(inttime*gain*err), label='Rolling')
+        #mpl.plot(self.cubewl, self.spectrum/self.errsum, label='Direct')
+        ax.set_ylim((0,500))
+        mpl.legend(fontsize = 15)
+        ax.tick_params(labelsize=15)
+        mpl.savefig('/Users/relliotmeyer/Desktop/SNR_'+savefig+'.png', dpi=300)
+        mpl.show()
+
+    def calcErrors(self, shift = False, savefig = False):
+        
+        if self.extracted:
+            cubefls = glob(self.cubebasepath + '*obs_cube.fits')
+            k = 0
+
+            wls = []
+            specs = []
+            for cube in cubefls:
+                cubeff = fits.open(cube)
+                data = cubeff[0].data
+                head = cubeff[0].header
+
+                pixel = np.arange(data.shape[0]) + 1.0
+                wl = pixel*head['CDELT3'] + head['CRVAL3']
+                wl *= 1e10
+
+                mean, median, dsum = self.extractRegion(data)
+
+                wls.append(wl)
+                specs.append(mean)
+                #reg = (12500 <= wl) & (13000 >= wl)
+                #ax.plot(wl[reg], dsum[reg]+k)
+                #k+=100
+
+            newspecs = []
+            wlprime = self.cubewl
+
+            if shift:
+                k = len(specs) / 2
+                for i, j in enumerate(np.arange(-2*k,2*k,2)):
+                    s = specs[i]
+                    
+                    s[np.isnan(s)] = np.nanmedian(s)
+                    f1 = interp1d(wls[i], s , kind='cubic', bounds_error = False, fill_value=1.0)
+                    newspecs.append(np.roll(f1(wlprime), int(j)))
+
+                newspecs = np.array(newspecs)
+                if savefig:
+                    fig,ax = mpl.subplots(figsize = (12,7))
+                    ax.set_title('Shifted Spectra')
+                    for s in newspecs:
+                        ax.plot(self.cubewl, s)
+                    #ax.set_ylim((0,np.percentile(speccopy/err, 98)))
+                    ax.tick_params(labelsize=15)
+                    mpl.savefig('/Users/relliotmeyer/Desktop/shifted_'+savefig+'.png', dpi=300)
+                    mpl.show()
+
+            else:
+                for i, j in enumerate(specs):
+                    s = specs[i]
+                    s[np.isnan(s)] = np.nanmedian(s)
+
+                    f1 = interp1d(wls[i], s , kind='cubic', bounds_error = False, fill_value=1.0)
+                    newspecs.append(f1(wlprime))
+                    
+                if savefig:
+                    fig,ax = mpl.subplots(figsize = (12,7))
+                    ax.set_title('All Cubes')
+                    for s in newspecs:
+                        ax.plot(wlprime, s)
+                    #ax.set_ylim((0,np.percentile(speccopy/err, 98)))
+                    ax.tick_params(labelsize=15)
+                    mpl.savefig('/Users/relliotmeyer/Desktop/notshifted_'+savefig+'.png', dpi=300)
+                    mpl.show()                    
+                    
+            err = np.std(newspecs, axis = 0) / np.sqrt(len(newspecs))
+        else:
+            print("Spectrum must be extracted first.")
+
+        return err
+    
+    def calcErrorsFinalCube(self, savefig = False):
+        
+        inttime = self.cubehead['INTTIME']
+        gain = 1.33            
+        
+        speccopy = np.array(self.spectrum)# / (inttime * gain))
+        speccopy[np.isnan(speccopy)] = -1
+
+        newsums = []
+        for j in np.arange(-6,6,1):
+            f1 = interp1d(self.cubewl, speccopy , kind='cubic', bounds_error = False, fill_value=1.0)
+            newsums.append(np.roll(speccopy, int(j)))
+
+        newsums = np.array(newsums)
+        err = np.std(newsums, axis = 0) / np.sqrt(20)
+        
+        if savefig:
+            fig,ax = mpl.subplots(figsize = (12,7))
+            ax.set_title('Shifted Median Spectra')
+            for s in newsums:
+                ax.plot(self.cubewl, s)
+            #ax.set_ylim((0,np.percentile(speccopy/err, 98)))
+            ax.tick_params(labelsize=15)
+            mpl.savefig('/Users/relliotmeyer/Desktop/shiftedmedian_'+savefig+'.png', dpi=300)
+            mpl.show()
+        
+        return err

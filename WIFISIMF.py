@@ -7,13 +7,13 @@ from astropy.io import fits
 from sys import exit
 import matplotlib.patches as patches
 from glob import glob
-import gaussfit as gf
 import os
 from astropy.visualization import (PercentileInterval, LinearStretch,
                                     ImageNormalize, ZScaleInterval)
 
 import WIFISTelluric as WT
 import WIFISSpectrum as WS
+import WIFISFitting as gf
 
 
 def convolvemodels(wlfull, datafull, veldisp):
@@ -53,13 +53,13 @@ class WIFISIMF(WT.WIFISTelluric):
             self.pa_raw = False
             self.veldisp = veldisp
             
-    def plotIMFLines(self, kind = 'Full', continuum = False, mask = [], save=False, gal='M85'):
+    def plotIMFLines(self, kind = 'Full', continuum = False, mask = [], save=False, \
+                     oldline = False, gal='M85'):
         
         if not self.reduced:
             print("Spectrum not reduced. Please remove telluric lines first.")
             return
         
-        oldline = True
         if oldline:
             self.linelow = [9905,10337,11372,11680,11765,12505, 12670, 12810]
             self.linehigh = [9935,10360,11415,11705,11793,12545, 12690, 12840]
@@ -134,9 +134,8 @@ class WIFISIMF(WT.WIFISTelluric):
             #errslice = err[wh] / np.median(data[wh])
             polyfit, regions = self.removeLineSlope(wlslice, dataslice, i)
             dataslice /= polyfit(wlslice)
-            errslice = self.target.cubeerr[wh]/polyfit(wlslice)
-
-
+            errslice = self.reducederr[wh]/polyfit(wlslice)
+            
             whm = np.where((mwl >= self.bluelow[i]) & (mwl <= self.redhigh[i]))[0]
             wlmslice = mwl[whm]
             
@@ -152,8 +151,8 @@ class WIFISIMF(WT.WIFISTelluric):
             axes[i].plot(wlslice, dataslice,'b', linewidth = 2.5, color='k', label = gal)
             #axes[i].axhline(1.0, color = 'k')
             #axes[i].plot(wlmslice, bhslice,'r--', label='Bottom-Heavy')
-            #axes[i].fill_between(wlslice,dataslice + errslice,dataslice-errslice, facecolor = 'gray', alpha=0.5)
-            axes[i].set_title(self.line_name[i], fontsize = 15)
+            axes[i].fill_between(wlslice,dataslice + errslice, dataslice-errslice, facecolor = 'gray', alpha=0.5)
+            axes[i].set_title(self.line_name[i], fontsize = 17)
             
             if gal == 'M87' and self.line_name[i] == 'KI 1.25':
                 axes[i].axvspan(self.bluelow[i], self.bluehigh[i], facecolor='grey', alpha=0.2)
@@ -168,7 +167,7 @@ class WIFISIMF(WT.WIFISTelluric):
 
             axes[i].plot(wlmslice, mslice,'g--',linewidth = 3.5, label = 'Kroupa')
             axes[i].plot(wlmslice, mslice2,'r--',linewidth = 3.5, label = 'BH')
-            axes[i].tick_params(axis='both', which='major', labelsize=13)
+            axes[i].tick_params(axis='both', which='major', labelsize=15)
             axes[i].set_xlim((self.bluelow[i], self.redhigh[i]))
 
         handles, labels = axes[0].get_legend_handles_labels()
