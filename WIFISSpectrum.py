@@ -355,7 +355,7 @@ class WIFISSpectrum():
         else:
             print("Spectrum not extracted yet")
     
-    def plotImage(self, subimage = False, title=False):
+    def plotImage(self, subimage = False, title=False, imagecoords=False):
         '''Produces a plot of the cube image with the defined regions overlaid. Axes should be 
         in celestial coordinates.
         
@@ -370,7 +370,10 @@ class WIFISSpectrum():
             fig = mpl.figure(figsize = (12,10))
             gs = gridspec.GridSpec(1,1)
 
-            ax1 = mpl.subplot(gs[0,0], projection = cubewcs)
+            if not imagecoords:
+                ax1 = mpl.subplot(gs[0,0], projection = cubewcs)
+            else:
+                ax1 = mpl.subplot(gs[0,0])
 
             norm = ImageNormalize(self.cubeim, interval=ZScaleInterval())
             ax1.imshow(self.cubeim, interpolation = None, origin='lower',norm=norm, \
@@ -419,17 +422,20 @@ class WIFISSpectrum():
 
             ax1.grid('both', color='g', alpha=0.5)
 
-            lon, lat = ax1.coords
-            lon.set_ticks(spacing= 5 * u.arcsec, size = 5)
-            lon.set_ticklabel(size = 13)
-            lon.set_ticks_position('lbtr')
-            lon.set_ticklabel_position('lb')
-            lat.set_ticks(spacing= 10 * u.arcsec, size = 5)
-            lat.set_ticklabel(size = 13)
-            lat.set_ticks_position('lbtr')
-            lat.set_ticklabel_position('lb')
-            lat.display_minor_ticks(True)
-            lon.display_minor_ticks(True)
+            if not imagecoords:
+                lon, lat = ax1.coords
+                lon.set_ticks(spacing= 5 * u.arcsec, size = 5)
+                lon.set_ticklabel(size = 13)
+                lon.set_ticks_position('lbtr')
+                lon.set_ticklabel_position('lb')
+                lat.set_ticks(spacing= 10 * u.arcsec, size = 5)
+                lat.set_ticklabel(size = 13)
+                lat.set_ticks_position('lbtr')
+                lat.set_ticklabel_position('lb')
+                lat.display_minor_ticks(True)
+                lon.display_minor_ticks(True)
+            else:
+                ax1.tick_params(axis='both', labelsize = 13, top=True, right=True)
 
             if title:
                 ax1.set_title(title)
