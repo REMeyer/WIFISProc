@@ -15,6 +15,7 @@ import WIFISTelluric as WT
 import WIFISSpectrum as WS
 import WIFISFitting as gf
 
+mbase = '/home/elliot/mcmcgemini/spec'
 
 def convolvemodels(wlfull, datafull, veldisp):
 
@@ -88,13 +89,11 @@ class WIFISIMF(WT.WIFISTelluric):
         fig, axes = mpl.subplots(2,4,figsize = (16,6.5))
         axes = axes.flatten()
         
-        wl = self.target.cubewlz
-        #wl = self.galwl / (1+0.002435)
+        #wl = self.target.cubewlz
+        wl = self.target.cubewl / (1+self.z)
 
-        mfl1 = '/Users/relliotmeyer/Thesis_Work/ssp_models/vcj_ssp/'+\
-                'VCJ_v8_mcut0.08_t13.5_Zp0.0.ssp.imf_varydoublex.s100'
-        mfl2 = '/Users/relliotmeyer/Thesis_Work/ssp_models/atlas/'+\
-                'atlas_ssp_t13_Zp0.0.abund.krpa.s100'
+        mfl1 = mbase+'/vcj_ssp/VCJ_v8_mcut0.08_t13.5_Zp0.0.ssp.imf_varydoublex.s100'
+        mfl2 = mbase+'/atlas/atlas_ssp_t13_Zp0.0.abund.krpa.s100'
         #model2 = np.loadtxt('/Users/relliotmeyer/Thesis_Work/ssp_models/vcj_ssp/VCJ_v8_mcut0.08_t13.5_Zp0.0.ssp.imf_varydoublex.s100')
 
         model = pd.read_table(mfl1, delim_whitespace = True, header=None)
@@ -151,17 +150,23 @@ class WIFISIMF(WT.WIFISTelluric):
             axes[i].plot(wlslice, dataslice,'b', linewidth = 2.5, color='k', label = gal)
             #axes[i].axhline(1.0, color = 'k')
             #axes[i].plot(wlmslice, bhslice,'r--', label='Bottom-Heavy')
-            axes[i].fill_between(wlslice,dataslice + errslice, dataslice-errslice, facecolor = 'gray', alpha=0.5)
+            axes[i].fill_between(wlslice,dataslice + errslice, dataslice-errslice,\
+                                 facecolor = 'gray', alpha=0.5)
             axes[i].set_title(self.line_name[i], fontsize = 17)
             
             if gal == 'M87' and self.line_name[i] == 'KI 1.25':
-                axes[i].axvspan(self.bluelow[i], self.bluehigh[i], facecolor='grey', alpha=0.2)
-                axes[i].axvspan(self.redlow[i], self.redhigh[i],facecolor='grey', alpha=0.2)
-                axes[i].axvspan(self.linelow[i], self.linehigh[i],facecolor='grey', alpha=0.2)
+                axes[i].axvspan(self.bluelow[i], self.bluehigh[i], facecolor='grey',\
+                                alpha=0.2)
+                axes[i].axvspan(self.redlow[i], self.redhigh[i],facecolor='grey',\
+                                alpha=0.2)
+                axes[i].axvspan(self.linelow[i], self.linehigh[i],facecolor='grey',\
+                                alpha=0.2)
             else:
-                axes[i].axvspan(self.bluelow[i], self.bluehigh[i], facecolor='b', alpha=0.2)
+                axes[i].axvspan(self.bluelow[i], self.bluehigh[i], facecolor='b',\
+                                alpha=0.2)
                 axes[i].axvspan(self.redlow[i], self.redhigh[i],facecolor='r', alpha=0.2)
-                axes[i].axvspan(self.linelow[i], self.linehigh[i],facecolor='m', alpha=0.2)
+                axes[i].axvspan(self.linelow[i], self.linehigh[i],facecolor='m',\
+                                alpha=0.2)
             #axes[i].fill_between(wlslice[regions[2]], dataslice[regions[2]], y2 = 1.0)
             #axes[i].fill_between(wlslice, dataslice - errslice, dataslice+errslice, facecolor='grey')
 
@@ -217,3 +222,35 @@ class WIFISIMF(WT.WIFISTelluric):
             mpl.legend()
             mpl.show()
             
+    def mergeSpectra(self, to_merge):
+
+        basewlz = self.target.cubewl / (1 + self.z)
+
+        stacked = []
+        stackederr = []
+        for imfobj in to_merge:
+            stacked.append(np.interp(basewlz, imfobj.target.cubewl/(1+imfobj.z), \
+                    imfobj.reducedspectrum))
+            stackederr.append(np.interp(basewlz, imfobj.target.cubewl/(1+imfobj.z), \
+                    imfobj.reducederr)**2.0)
+
+        stacked = np.array(stacked)
+        stackederr = np.array(stackederr)
+
+        finalspectrum = np.mean(stacked, axis = 0)
+        finalerr = np.sqrt(np.sum(stackederr, axis = 0)) / len(stackederr)
+
+        self.original_reducedspectrum = np.array(self.reducedspectrum)
+        self.reducedspectrum = np.array(finalspectrum)
+
+        self.original_reducederr = np.array(self.reducederr)
+        self.reducederr = np.array(finalerr)
+
+
+    def revertMerge(self):
+
+        self.reducedspectrum = np.array(self.original_reducedspectrum)
+        self.reducederr = np.array(self.original_reducederr)
+        
+
+

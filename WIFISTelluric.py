@@ -27,7 +27,52 @@ import WIFISFitting as gf
 mpl.rc('text', usetex=True)
 mpl.rc('font', family='serif')
 
+curr_dir = os.path.dirname(os.path.realpath(__file__))
+
+#Contributed by Margaret
+def fwhm2sigma(fwhm):
+    ''' Quick function to convert a gaussian fwhm to a standard deviation.'''
+    
+    return fwhm / np.sqrt(8 * np.log(2))
+
+def create_vega_con():
+    '''One-off function to create a vega spectrum for use in correcting WIFIS 
+    telluric spectra'''
+    
+    vega = pd.read_csv("vega.txt", sep = "\s+", header=None)
+    vega.columns = ['a', 'b', 'c']
+    n_points = 895880
+    x_vals = vega['a']*10#to convert to angstroms
+    y_vals = vega['b']
+
+    sigma = fwhm2sigma(7)
+    
+    # Make Gaussian centered at 13 with given sigma
+    x_position = 10049
+    kernel_at_pos = np.exp(-(x_vals - x_position) ** 2 / (2 * sigma ** 2))
+
+    # Make kernel sum to 1
+    kernel_at_pos = kernel_at_pos / sum(kernel_at_pos)
+
+    ## Number of kernel points before center (at 0)
+    kernel_n_below_0 = int((len(kernel_at_pos) - 5 ) / 2.567)
+
+    convolved_y = np.convolve(y_vals, kernel_at_pos)
+    ##print(convolved_y[13+ kernel_n_below_0])
+
+    smoothed_by_convolving = \
+        convolved_y[kernel_n_below_0:(n_points+kernel_n_below_0)]
+    f1 = interp1d(x_vals, smoothed_by_convolving, kind='cubic')
+
+    #plt.plot(x_vals, smoothed_by_convolving/210000, \
+    #label='smoothed vega')#/230000
+
+    #"""Saving the convolved Vegaj to file"""
+    c = np.where((x_vals >= 8000) & (x_vals <= 13500))[0]
+    var = zip(x_vals[c], (smoothed_by_convolving/210000)[c])
+    np.savetxt("vega-con-new.txt", var)
 ##############################################################
+
 class WIFISTelluric():
     '''Class that hanles the telluric reduction procedure for WIFIS spectra.'''
 
@@ -67,7 +112,7 @@ class WIFISTelluric():
         the telluric spectrum.'''
 
         ##Loading convolved Vega
-        vega_con = pd.read_csv('/Users/relliotmeyer/WIFIS/WIFISProc/vega-con-new.txt',\
+        vega_con = pd.read_csv(curr_dir+'/vega-con-new.txt',\
                                sep = ' ', header = None)
         vega_con.columns = ['a', 'b']   #Col 1 = wavelength, col 2 = FLux
         self.vegawl = vega_con['a']
@@ -125,10 +170,10 @@ class WIFISTelluric():
             wlvalz = self.target.cubewlz
 
 
-            regions = [(9400,9700),(10300,10500),(11000,11500),(11500,11900),\
-                       (12200,12500),(12600,13000)]
+            regions = [(9400,9700),(9700,10300),(10300,10500),(11000,11500),(11500,11900),\
+                       (12200,12600),(12600,13000)]
             for i, region in enumerate(regions):
-                fig, axes = mpl.subplots(2,1,figsize = (15,10), sharex=True)
+                fig, axes = mpl.subplots(2,1,figsize = (15,7), sharex=True)
                 whreg = (wlvalz >= region[0]) & (wlvalz <= region[1])
 
                 axes[0].plot(wlvalz[whreg],WS.norm(normtell[whreg]), 'r')
@@ -657,18 +702,16 @@ class WIFISTelluric():
         axes[0].plot(wlslice, WS.norm(galslice), 'b')
         axes[1].plot(wlslice, galslice/WS.norm(tellslice**scale),'k')
         mpl.show()
-    
 
-
-    def plotImages(self):
+    def plotImages(self, imagecoords=False):
         '''Produces plots of the telluric and galaxy images. Axes should be 
         in celestial coordinates.'''
         
         fig = mpl.figure(figsize = (12,10))
         gs = gridspec.GridSpec(2,1)
         
-        self.telluric.plotImage(subimage=gs[0,0])
-        self.target.plotImage(subimage=gs[1,0])
+        self.telluric.plotImage(subimage=gs[0,0], imagecoords=imagecoords)
+        self.target.plotImage(subimage=gs[1,0], imagecoords=imagecoords)
         
         self.telluric.plotax.set_title("Telluric", fontsize = 15)
         self.target.plotax.set_title("Target", fontsize = 15)
