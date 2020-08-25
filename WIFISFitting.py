@@ -28,7 +28,8 @@ def gaussian_os(xs, a, sigma, x0, b):
 ### Natural gauss
 def gauss_nat(xs, p0):
     '''Returns a gaussian function with inputs p0 over xs. p0 = [sigma, mean]'''
-    return  (1 / (2.*np.pi*p0[0]**2.))* np.exp((-1.0/2.0) * ((xs - p0[1])/p0[0])**2.0)
+    #return  (1 / (2.*np.pi*p0[0]**2.))* np.exp((-1.0/2.0) * ((xs - p0[1])/p0[0])**2.0)
+    return  (1. / (np.sqrt(2.*np.pi)*p0[0])) * np.exp((-1.0/2.0) * ((xs - p0[1])/p0[0])**2.0)
 
 def gaussian_nat(xs, sigma, x0):
     second = ((xs - x0)/sigma)**2.0

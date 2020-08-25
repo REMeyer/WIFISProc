@@ -89,6 +89,7 @@ class WIFISTelluric():
         self.telluric = telluric
         self.wl = self.target.cubewl
         self.wlz = self.target.cubewlz
+        self.z = self.target.z
         
         if not self.target.extracted:
             print("Target spectrum not extracted, please extract spectrum before continuing.")
@@ -118,6 +119,7 @@ class WIFISTelluric():
         self.vegawl = vega_con['a']
         self.vegadata = vega_con['b']
         
+        #Creates tellspecreduced, tellerrreduced
         self.correctHLines(hlinemode, profile = profile, hlineplot = hlineplot)
 
         #self.write_reduced_spectrum(kind = 'Telluric')
@@ -143,7 +145,6 @@ class WIFISTelluric():
         self.tellerrinterp[self.tellerrinterp < 0] *= -1
         self.tellerrinterp = self.tellerrinterp ** self.tarscale
 
-        
         normtell = WS.norm(self.tellinterp)
         normtellerr = self.tellerrinterp / np.nanmedian(self.tellinterp)
         
@@ -161,25 +162,44 @@ class WIFISTelluric():
         self.reducedspectrum = self.target.spectrum / normtell
         errterm = np.sqrt((self.target.cubenoise / self.target.spectrum)**2.0 + \
                          (normtellerr / normtell)**2.0)
+        
+
         self.reducederr = self.reducedspectrum * errterm 
         self.reduced = True
+
+        fig, ax = mpl.subplots(figsize = (15,7))
+        ax.plot(self.telluric.cubewl, self.telluric.cubenoise,label='telluricnoise')
+        ax.plot(self.wl, self.target.cubenoise,label = 'targetnoise')
+        ax.plot(self.wl, normtellerr, label='final telluric error')
+        ax.plot(self.wl, self.reducederr,label='reduced error')
+        ax.set_ylim((0,0.2))
+        ax.legend()
+        mpl.show()
             
         #Plot resulting spectrum
         if plot == True:
-            wlval = self.target.cubewl
-            wlvalz = self.target.cubewlz
-
-
+            
             regions = [(9400,9700),(9700,10300),(10300,10500),(11000,11500),(11500,11900),\
-                       (12200,12600),(12600,13000)]
+                       (12200,12600),(12600,12775),(12775,13000)]
             for i, region in enumerate(regions):
                 fig, axes = mpl.subplots(2,1,figsize = (15,7), sharex=True)
-                whreg = (wlvalz >= region[0]) & (wlvalz <= region[1])
+                whreg = (self.wlz >= region[0]) & (self.wlz <= region[1])
 
-                axes[0].plot(wlvalz[whreg],WS.norm(normtell[whreg]), 'r')
-                axes[0].plot(wlvalz[whreg],WS.norm(self.target.spectrum[whreg]),'b')
+                axes[0].plot(self.wlz[whreg],WS.norm(normtell[whreg]), 'r',\
+                             label='Telluric')
+                axes[0].plot(self.wlz[whreg],WS.norm(self.target.spectrum[whreg]),'b',\
+                            label = 'Science')
 
-                axes[1].plot(wlvalz[whreg],WS.norm(self.reducedspectrum[whreg]), 'k')
+                axes[1].plot(self.wlz[whreg],WS.norm(\
+                        self.reducedspectrum[whreg]), 'k',label='Reduced')
+                axes[0].legend()  
+                axes[1].legend()
+                axes[0].tick_params(labelsize = 15)
+                axes[1].tick_params(labelsize = 15)
+                
+                ax2 = axes[0].twiny()
+                ax2.plot(self.wl[whreg],WS.norm(normtell[whreg]),\
+                        linestyle='None')
                 mpl.tight_layout()
                 mpl.minorticks_on()
                 mpl.grid(axis='x', which='both')
@@ -190,7 +210,7 @@ class WIFISTelluric():
             fig, ax = mpl.subplots(figsize = (15,10))
 
             nonnan = ~np.isnan(self.reducedspectrum)
-            ax.plot(wlvalz[nonnan][50:-20], WS.norm(self.reducedspectrum[nonnan][50:-20]), 'k')
+            ax.plot(self.wlz[nonnan][50:-20], WS.norm(self.reducedspectrum[nonnan][50:-20]), 'k')
 
             ax.set_title("Reduced and de-Redshifted Spectrum")
             ax.set_xlabel("Wavelength ($\AA$)", fontsize=13)
@@ -208,7 +228,8 @@ class WIFISTelluric():
             # and telluric spectra. Then applies a polynomial fit to the difference
             # to the vega wavelength solution
             
-            poly = self.measure_hlines(fittype = 'normal', plot = hlineplot, profile=profile)
+            poly = self.measure_hlines(fittype = 'normal', plot = hlineplot,\
+                                       profile=profile)
             vegawlnew = self.vegawl + poly(self.vegawl)
 
             # Interpolate new vega spectrum using corrected wavelength solution
@@ -226,7 +247,7 @@ class WIFISTelluric():
             if hlineplot:
                 fig, axis = mpl.subplots(2,1,figsize=(15,10), sharex=True)
                 axis[0].plot(self.telluric.cubewl, WS.norm(self.telluric.spectrum),'b', \
-                             label='Standard Star Spectrum')
+                             label='Standard Star SpecWS.trum')
                 axis[0].plot(self.telluric.cubewl, WS.norm(vegainterp),'r', label='Vega Spectrum')
                 axis[1].plot(self.telluric.cubewl, WS.norm(self.tellspecreduced),'k', label='Telluric Spectrum')
                 axis[0].set_ylabel('Relative Flux', fontsize = 17)
@@ -247,6 +268,20 @@ class WIFISTelluric():
                 #mpl.savefig('/Users/relliotmeyer/Desktop/VegaCorrection.pdf', dpi=500)
                 mpl.show()
 
+                fig, axes = mpl.subplots(2,4,figsize = (16,9))
+                axes = axes.flatten()
+                hlinelow =  [8840,8960,9190,9520,9900,10880,12720]
+                hlinehigh = [8925,9050,9275,9600,10120,11020,12900]
+
+                for i in range(len(hlinelow)):
+                    wh = np.where(np.logical_and(self.telluric.cubewl >= hlinelow[i],\
+                            self.telluric.cubewl <= hlinehigh[i]))[0]
+                    axes[i].plot(self.telluric.cubewl[wh], WS.norm(self.telluric.spectrum[wh]))
+                    axes[i].plot(self.telluric.cubewl[wh], WS.norm(vegainterp[wh]))
+                    axes[i].plot(self.telluric.cubewl[wh], WS.norm(self.tellspecreduced[wh]))
+
+                mpl.show()
+
         elif hlinemode == 'none':
             # Just shifts and scales the interpolated vega spectrum.
 
@@ -261,10 +296,10 @@ class WIFISTelluric():
 
             print("SHIFT AND SCALE FOR VEGA IS: ", self.tellshift, self.tellscale)
 
-            if plot:
+            if hlineplot:
                 fig, axis = mpl.subplots(2,1,figsize=(15,10))
                 axis[0].plot(self.telluric.cubewl, WS.norm(self.telluric.spectrum),'b')
-                axis[0].plot(self.telluric.cubewl, norm(vegainterp),'r')
+                axis[0].plot(self.telluric.cubewl, WS.norm(vegainterp),'r')
                 axis[1].plot(self.telluric.cubewl, self.tellspecreduced)
                 mpl.show()
 
@@ -290,7 +325,7 @@ class WIFISTelluric():
             
             newtelluric = self.measure_hlines(fittype = 'normal', plot=False,\
                             remove=True, profile=profile)
-            if plot:
+            if hlineplot:
                 fig, axes = mpl.subplots(figsize = (15,10))
                 axes.plot(self.telluric.cubewl, self.telluric.spectrum,'b')
                 axes.plot(self.telluric.cubewl, newtelluric,'r')
@@ -367,13 +402,13 @@ class WIFISTelluric():
                 if profile == 'lorentzian':
                     #popt,pcov = gf.lorentzian_fit(linewl, linedata, [-150., 30., midguess[l], 7])
                     popt,pcov = gf.fit_func(linewl, linedata, \
-                                            [a, 30., midguess[l], o], func=gf.lorentzian)
+                            [a, 30., midguess[l], o], func=gf.lorentzian)
                     fitg = gf.lorentz(linewl, popt)
                     midline = popt[2]
                 elif profile == 'voigt':
                     #popt,pcov = gf.voigt_fit(linewl, linedata, [midguess[l], -150., 30., 10., 7.])
                     popt,pcov = gf.fit_func(linewl, linedata, \
-                                             [midguess[l], a, 35., 1., o], func=gf.voigtfull)
+                             [midguess[l], a, 35., 1., o], func=gf.voigtfull)
                     fitg = gf.voigt(linewl, popt)
                     midline = popt[0]
 
@@ -390,11 +425,14 @@ class WIFISTelluric():
                 vdata = self.vegadata[vwh]
 
                 try:
-                    poptvega,pcov = gf.fit_func(vwl, vdata, [midguess[l], 15., 30., 10., 7.],\
+                    poptvega,pcov = gf.fit_func(vwl, vdata, \
+                            [midguess[l], 15., 30., 10., 7.],\
                             func=gf.voigtfull)
                 except:
-                    poptvega,pcov = gf.fit_func(vwl, vdata, [midguess[l], 15., 30., 10., 7.],\
+                    poptvega,pcov = gf.fit_func(vwl, vdata, \
+                            [midguess[l], 15., 30., 10., 7.],\
                             func=gf.voigtfull)
+                
                 fitvega = gf.voigt(vwl, poptvega)
                 midline = poptvega[0]
 
@@ -476,7 +514,7 @@ class WIFISTelluric():
             print("Science spectrum not reduced...returning")
             return
 
-        hdu2 = fits.ImageHDU(self.target.cubewl, name = 'WL')
+        hdu2 = fits.ImageHDU(self.wl, name = 'WL')
         if self.target.uncertainties:
             hdu3 = fits.ImageHDU(self.reducederr, name = 'ERR')
             hdul = fits.HDUList([hdu,hdu2,hdu3])
@@ -717,3 +755,7 @@ class WIFISTelluric():
         self.target.plotax.set_title("Target", fontsize = 15)
 
         mpl.show()        
+        
+    def redoZ(self):
+        self.wlz = self.wl/(1.+self.z)
+        

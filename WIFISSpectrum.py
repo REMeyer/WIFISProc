@@ -10,6 +10,7 @@
 import pandas as pd
 from scipy.interpolate import interp1d, interp2d
 from scipy import stats
+import scipy.ndimage
 import numpy as np
 from astropy.io import fits
 from sys import exit
@@ -29,6 +30,8 @@ from astropy import wcs
 from astropy import units as u
 from astropy.modeling.models import Ellipse2D
 from astropy.coordinates import Angle
+
+import WIFISFitting as WF
 
 mpl.rc('text', usetex=True)
 mpl.rc('font', family='serif')
@@ -52,16 +55,19 @@ def circle_spec(spec, x0, y0, radius, annulus = False):
     shape = spec.shape
     xx, yy = np.mgrid[:shape[1],:shape[2]]
     circle = (xx - x0)**2. + (yy - y0)**2.
-
     if annulus:
         # If annulus, create a mask only within the two annular limits
-        whgood = (circle <= (annulus**2.0)) & (circle >= (radius**2.0))
+        whgood = np.logical_and(circle <= (radius**2.0), circle >= (annulus**2.0))
     else:
         # If circle, create a mask within the circle radius
         whgood = circle <= radius**2.0
 
     # return the mask
     return whgood
+
+def get_skycube(fl):
+    
+    return WIFISSpectrum(fl, 0)
 
 def ellipse_region(cube, center, a, ecc, theta, annulus = False):
     ''' Function that returns a mask that defines the elements that lie
@@ -153,7 +159,7 @@ class WIFISSpectrum():
         self.cubeim = np.nansum(self.cubedata, axis = 0)
         
         # Generate wavelength array from header in Angstroms
-        pixel = np.arange(self.cubedata.shape[0]) + 1.0
+        pixel = np.arange(self.cubedata.shape[0]) 
         self.cubewl = pixel*self.cubehead['CDELT3'] + self.cubehead['CRVAL3']
         self.cubewl *= 1e10
         
@@ -257,6 +263,10 @@ class WIFISSpectrum():
         elif mode == 'ShiftMedian':
             self.cubenoise = self.calcErrorsFinalCube()
             self.uncertainties = True
+
+        elif mode == 'NewShift':
+            self.cubenoise = self.calcErrors(newshift=True, verbose=verbose)
+            self.uncertainties = True
             
         if plot:
             fig, ax = mpl.subplots(figsize = (12,7))
@@ -265,6 +275,7 @@ class WIFISSpectrum():
             ax.set_xlabel('Error Value', fontsize = 15)
             ax.set_ylabel("Wavelength (A)", fontsize = 15)
             ax.tick_params(labelsize = 15)
+            ax.set_ylim((0,1.0))
             ax.legend()
             mpl.show()
             
@@ -370,7 +381,7 @@ class WIFISSpectrum():
             self.spectrum[whreg] = cont
             print(f"Corrected region: {region}")
 
-    def plotImage(self, subimage = False, title=False, imagecoords=False):
+    def plotImage(self, subimage = False, title=False, imagecoords=False, scaling='ZScale'):
         '''Produces a plot of the cube image with the defined regions overlaid. Axes should be 
         in celestial coordinates.
         
@@ -392,7 +403,10 @@ class WIFISSpectrum():
             else:
                 ax1 = mpl.subplot(gs[0,0])
 
-            norm = ImageNormalize(self.cubeim, interval=ZScaleInterval())
+            if scaling == 'ZScale':
+                norm = ImageNormalize(self.cubeim, interval=ZScaleInterval())
+            else:
+                norm = ImageNormalize(self.cubeim, interval=PercentileInterval(scaling))
             ax1.imshow(self.cubeim, interpolation = None, origin='lower',norm=norm, \
                           cmap='Greys')
 
@@ -414,23 +428,25 @@ class WIFISSpectrum():
                     ax1.add_patch(circ)
             if self.ellipse:
                 # [x0,y0,theta,a,e, annulus]
+                e = np.sqrt(1 - (self.ellipse[4]**2))
+                an = Angle(self.ellipse[2], 'deg')
+
                 if self.ellipse[5]:
-                    an = Angle(ellipse[2], 'deg')
-                    b = ellipse[3] * ellipse[4]
+                    b = self.ellipse[3] * e
                     
                     el1 = patches.Ellipse((self.ellipse[1],self.ellipse[0]),\
                         2*self.ellipse[3], 2*b, angle = -an.degree + 90, \
                         linewidth=2, edgecolor='m', facecolor='none')
                     ax1.add_patch(el1)
                     
-                    b2 = ellipse[5] * ellipse[4]
+                    b2 = self.ellipse[5] * e
                     el2 = patches.Ellipse((self.ellipse[1],self.ellipse[0]),\
                         2*self.ellipse[5], 2*b2, angle = -an.degree + 90, \
-                        linewidth=2, edgecolor='m',facecolor='none')
-                    ax1.add_patch(cl2)
+                        linewidth=2, edgecolor='r',facecolor='none')
+                    ax1.add_patch(el2)
                 else:
-                    an = Angle(ellipse[2], 'deg')
-                    b = ellipse[3] * ellipse[4]
+                    an = Angle(self.ellipse[2], 'deg')
+                    b = self.ellipse[3] * e
                     
                     el1 = patches.Ellipse((self.ellipse[1],self.ellipse[0]),\
                         2*self.ellipse[3], 2*b, angle = -an.degree + 90, \
@@ -442,6 +458,7 @@ class WIFISSpectrum():
             if not imagecoords:
                 lon, lat = ax1.coords
                 lon.set_ticks(spacing= 5 * u.arcsec, size = 5)
+                lon.set_major_formatter('hh:mm:ss')
                 lon.set_ticklabel(size = 13)
                 lon.set_ticks_position('lbtr')
                 lon.set_ticklabel_position('lb')
@@ -467,7 +484,10 @@ class WIFISSpectrum():
             else:
                 self.plotax = mpl.subplot(subimage)
 
-            norm = ImageNormalize(self.cubeim, interval=PercentileInterval(98))
+            if scaling == 'ZScale':
+                norm = ImageNormalize(self.cubeim, interval=ZScaleInterval())
+            else:
+                norm = ImageNormalize(self.cubeim, interval=PercentileInterval(scaling))
             self.plotax.imshow(self.cubeim, interpolation = None,\
                     origin='lower',norm=norm, cmap='Greys')
 
@@ -591,7 +611,6 @@ class WIFISSpectrum():
             specmean = np.nanmean(specslice, axis = 1)
             specmedian = np.nanmedian(specslice, axis = 1)
             specsum = np.nansum(specslice, axis = 1)
-
             if square_errors:
                 specsum = np.sqrt(np.sum(specslice**2.0, axis = 1))
 
@@ -626,13 +645,16 @@ class WIFISSpectrum():
         return specmean, specmedian, specsum
     
 
-    def calcErrors(self, shift = False, savefig = False, verbose = False):
+    def calcErrors(self, shift = False, newshift = False, savefig = False, verbose = False, adj = False):
         '''Calculates the uncertainties for the spectrum. See self.getUncertainties
         for a definition of each method'''
 
         if self.extracted:
             # Use the template adjusted cubes
-            cubefls = glob(self.cubebasepath + '*obs_cube_adj.fits')
+            if adj:
+                cubefls = glob(self.cubebasepath + '*obs_cube_adj.fits')
+            else:
+                cubefls = glob(self.cubebasepath + '*obs_cube.fits')
 
             if verbose:
                 print("Files: ",cubefls)
@@ -673,6 +695,31 @@ class WIFISSpectrum():
                     f1 = interp1d(wls[i], s , kind='cubic', bounds_error = False, fill_value=1.0)
                     #Do the shifting (rolling)
                     newspecs.append(np.roll(f1(wlprime), int(j)))
+
+                newspecs = np.array(newspecs)
+                if savefig:
+                    fig,ax = mpl.subplots(figsize = (12,7))
+                    ax.set_title('Shifted Spectra')
+                    for s in newspecs:
+                        ax.plot(self.cubewl, s)
+                    #ax.set_ylim((0,np.percentile(speccopy/err, 98)))
+                    ax.tick_params(labelsize=15)
+                    mpl.savefig('/Users/relliotmeyer/Desktop/shifted_'+savefig+'.png', dpi=300)
+                    mpl.show()
+
+            elif newshift:
+                shifts = [-2,-1,0,1,2]
+                specs *= 4
+                wls *= 4
+                for i in range(len(specs)):
+                    s = specs[i]
+                    
+                    #Replace NaNs with the median. Should only be on the edges of the spectrum
+                    s[np.isnan(s)] = np.nanmedian(s)
+                    #Interpolate onto one wavelength array
+                    f1 = interp1d(wls[i], s , kind='cubic', bounds_error = False, fill_value=1.0)
+                    #Do the shifting (rolling)
+                    newspecs.append(np.roll(f1(wlprime), shifts[i % len(shifts)]))
 
                 newspecs = np.array(newspecs)
                 if savefig:
@@ -834,7 +881,7 @@ class WIFISSpectrum():
         ax.set_title("Errors Comparison")
         #mpl.plot(self.cubewl, self.spectrummean/(inttime*gain*err), label='Rolling')
         #mpl.plot(self.cubewl, self.spectrum/self.errsum, label='Direct')
-        ax.set_ylim((0,0.4))
+        ax.set_ylim((0,0.2))
         mpl.legend(fontsize = 15)
         ax.tick_params(labelsize=15)
 
@@ -880,6 +927,158 @@ class WIFISSpectrum():
         ax.set_title(title)
         ax.legend()
         mpl.show()
+
+    def measureProfile(self, ycen, xcen, plot=True, axis='x'):
+
+        if axis == 'x':
+            dataslice = self.cubeim[ycen,:]
+            xdata = np.arange(self.cubeim.shape[1])
+            p0 = [10000.,3.0,xcen]
+        else:
+            dataslice = self.cubeim[:,xcen]
+            xdata = np.arange(self.cubeim.shape[0])
+            p0 = [10000.,3.0,ycen]
+
+        fit = WF.fit_func(xdata, dataslice, p0)
+        print(f"###Fit###\nAmp:\t{fit[0][0]}\nSigma:\t{fit[0][1]}\nMean:\t{fit[0][2]}")
+
+        if plot:
+            fig,ax = mpl.subplots(figsize = (15,8))
+            ax.plot(xdata, dataslice, label='ImageData')
+            ax.plot(xdata, WF.gauss(xdata,fit[0]), label='Fit') 
+            mpl.show()
+
+    def plotSNR(self):
+
+        if self.extracted and self.uncertainties:
+            fig,ax = mpl.subplots(figsize = (15,8))
+            ax.plot(self.cubewl, self.spectrum/self.cubenoise, label='S/N')
+            mpl.show()
+        else:
+            print("Spectrum not extracter and/or no uncertainties")
+
+    def minSpec(self, wl, data, region = 30):
+    
+        length = wl[-1] - wl[0]
+        start = wl[0]
+        n_iter = int(np.floor(length/region))
+        wls = []
+        vals = []
+        for i in range(n_iter):
+            wh = np.where(np.logical_and(wl >= start + i*region, \
+                                         wl < start + (i+1)*region))[0]
+            dslice = data[wh]
+            wls.append(np.mean(wl[wh]))
+            vals.append(np.min(data[wh]))
+        wh = np.where(wl >= start + i*region)[0]
+        wls.append(np.mean(wl[wh]))
+        vals.append(np.min(data[wh]))
+
+        return np.array(wls), np.array(vals)
+
+    def skyAdjustSpec(self, params, process=False, plot=True, plotrange = None, \
+                      shift=0.0):
+
+        if not self.extracted:
+            print("Spectrum not extracted")
+
+        try:
+            self.spectrum = self.spectrum_orig
+            print("Replaced adjusted spectrum with original spectrum")
+        except:
+            print("No original spectrum found")
+            pass
+        
+        sig, a1, a2 = params
+        if plotrange:
+            low,high = plotrange
+        
+        skycube = get_skycube(glob(self.cubebasepath + '*_sky_cube.fits')[0]) 
+        
+        if self.ellipse:
+            skycube.ellipse=self.ellipse 
+        elif self.circle:
+            skycube.circle=self.circle 
+        elif self.limits:
+            skycube.limits=self.limits
+            
+        skycube.extractSpectrum()
+        
+        #wh1 = np.where((skycube.cubewl > low) & (skycube.cubewl < high))[0]
+        skynan = np.isnan(skycube.spectrum)
+        skywl = skycube.cubewl[~skynan]
+        
+        skyinterp = np.interp(self.cubewl, skywl, skycube.spectrum[~skynan])
+        
+        wls, vals = self.minSpec(skywl, skycube.spectrum[~skynan], region=20)
+        skybaseinterp = np.interp(self.cubewl, wls, vals)
+
+        skyinterp -= skybaseinterp
+
+        skybroad = scipy.ndimage.gaussian_filter(skyinterp, sig)
+        
+        #skybroad = convolvesky(cubewl, skyinterp, 1.2)
+        #wh2 = np.where((skywl > low) & (skywl < high))[0]
+
+        #skyinterp = skyinterp**1.06
+        skysub = skyinterp - np.nanmedian(skyinterp)
+        #sciadj = scicube.spectrum - skysub * 0.008
+
+        #skybroad = skybroad**0.9
+        skysub2 = skybroad - np.nanmedian(skybroad)
+        #sciadj2 = scicube.spectrum - skysub2 * 0.008
+
+        skydiff = a1*skysub - a2*skysub2
+        if shift != 0.:
+            skydiff = np.interp(self.cubewl, self.cubewl+shift, skydiff)
+
+        sciadj3 = np.array(self.spectrum - skydiff)
+        
+        if plot:
+            mpl.close('all')
+            fig,axes = mpl.subplots(3,1,figsize = (14,10),sharex=True)
+            axes = axes.flatten()
+            mpl.tight_layout()
+
+            wh1 = np.where((self.cubewl > low) & (self.cubewl < high))[0]
+
+            axes[0].plot(self.cubewl[wh1], self.spectrum[wh1], \
+                         linewidth = 3, label='Target')
+            axes[0].plot(self.cubewl[wh1], skydiff[wh1] + \
+                    np.median(self.spectrum[wh1]), \
+                    label='Aligned Sky - Broad Spectrum')
+            
+            axes[1].plot(self.cubewl[wh1], skysub[wh1], linewidth = 3, \
+                         label='Sky')
+            axes[1].plot(self.cubewl[wh1], skysub2[wh1], linewidth = 1,\
+                         label='Broad')
+            axes[1].plot(self.cubewl[wh1], skydiff[wh1], linewidth = 3., \
+                         label='Sky - Broad')
+
+            axes[2].plot(self.cubewl[wh1], sciadj3[wh1], linewidth = 3, \
+                         label='Target - Convolve')
+            
+            axes[0].legend(fontsize=13)
+            axes[1].legend(fontsize=13)
+            axes[2].legend(fontsize=13)
+
+            for ax1 in axes:
+                ax1.minorticks_on()
+                ax1.grid(which='both')
+                ax1.tick_params(labelsize = 15)
+                ax1.set_ylabel("Relative Flux", fontsize = 17)
+            axes[2].set_xlabel("Wavelength (\AA)", fontsize=17)
+
+        if process:
+            start, end = process
+            self.spectrum_orig = self.spectrum
+            wh = np.where((self.cubewl >= start) & (self.cubewl <= end))[0]
+            self.spectrum[wh] = sciadj3[wh]
+        #fig.savefig('/home/elliot/addition_skyreduction.png', dpi=200)
+        
+        
+
+
 
 
 
