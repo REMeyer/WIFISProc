@@ -59,8 +59,11 @@ class WIFISIMF(WT.WIFISTelluric):
 
         self.merged = True
         self.resampled = False
+        self.mask = []
+        self.maskedspectrum = False
+        self.maskedwl = False
 
-    def plotIMFLines(self, kind = 'Full', continuum = False, mask = [], save=False, \
+    def plotIMFLines(self, kind = 'Full', continuum = False, save=False, \
                      oldline = False, gal='Galaxy', age=13.5):
         
         if not self.reduced:
@@ -93,7 +96,7 @@ class WIFISIMF(WT.WIFISTelluric):
             'Mn+', 'Ba+', 'Ba-', 'Ni+', 'Co+', 'Eu+', 'Sr+', 'K+',\
             'V+', 'Cu+', 'Na+0.6', 'Na+0.9']
 
-        fig, axes = mpl.subplots(2,4,figsize = (16,6.5))
+        fig, axes = mpl.subplots(2,4,figsize = (17,8))
         axes = axes.flatten()
         
         wl = self.wl / (1+self.z)
@@ -113,7 +116,8 @@ class WIFISIMF(WT.WIFISTelluric):
         model = pd.read_table(mfl1, delim_whitespace = True, header=None)
         model2 = pd.read_table(mfl2, skiprows=2, names = self.chem_names, \
                                delim_whitespace = True, header=None)
-        na = np.array(model2['Na+0.9'])
+        #na = np.array(model2['Na+0.9'])
+        na = np.array(model2['Ca+'])
         solar = np.array(model2['Solar'])
 
         ratio = na/solar
@@ -123,8 +127,8 @@ class WIFISIMF(WT.WIFISTelluric):
         mspec = np.array(model[73])
 
         #mspec2 = mspec * ratio
-        #mspec2 = model[221]
-        mspec2 = model[153]
+        mspec2 = model[221]
+        #mspec2 = model[153]
         mspec3 = mspec + mspec*ratio
 
         #mspec = WT.convolvemodels(mwl, mspec, 140.)
@@ -138,7 +142,10 @@ class WIFISIMF(WT.WIFISTelluric):
         mcolours = ['tab:green','tab:red','tab:blue']
 
         if kind == 'Full':
-            data = self.reducedspectrum
+            if len(self.mask) != 0:
+                data = self.maskedspectrum
+            else:
+                data = self.reducedspectrum
         elif kind == 'Raw':
             data = self.target.spectrum
         
@@ -311,7 +318,72 @@ class WIFISIMF(WT.WIFISTelluric):
         self.reducederr = np.array(self.original_reducederr)
 
 
-    def maskRegion(self, wlstart, wlend, plot=False, confirm = True):
+    def maskRegion(self, wlstartlist, wlendlist, index = False, plot=False, confirm = True,\
+                  reset_mask = False):
+        
+        if not self.reduced:
+            print("Spectrum not reduced")
+            return
+        
+        if np.logical_or(len(self.mask) == 0, reset_mask):
+            self.mask = np.ones(self.reducedspectrum.shape, dtype=bool)
+        
+        if type(wlstartlist) in [int, float]:
+            wlstartlist = [wlstartlist]
+            wlendlist = [wlendlist]
+        
+        dw = self.wl[1] - self.wl[0]
+        whlist = []
+        
+        for i, wlstart in enumerate(wlstartlist):
+            wlend = wlendlist[i]
+            if not index:
+                if (wlstart + dw) >= wlstart:
+                    print("region ",i," is too small.\nTry again")
+                    return
+                    
+                    
+                wh = np.where(np.logical_and(self.wl >= wlstart, self.wl <= wlend))[0]
+                whlist.append(wh)
+                # Increase the range to see the appropriate plot
+                whplot = np.where(np.logical_and(self.wl >= wlstart-100, \
+                                                 self.wl <= wlend+100))[0]
+            else:
+                if (wlstart + 1 >= wlend):
+                    print("region ",i," is too small.\nTry again")
+                    return
+                    
+                dw_100 = int(np.floor(100 / (self.wl[1] - self.wl[0])))
+                dw_100minus = int(np.max([0, wlstart - dw_100]))
+                dw_100plus = int(np.min([self.mask.shape[0],wlend+dw_100]))
+
+            if plot:
+                fig,ax = mpl.subplots(figsize=(12,6))
+                if not index:
+                    ax.plot(self.wl[whplot],self.reducedspectrum[whplot], 'k')
+                    ax.plot(self.wl[wh], self.reducedspectrum[wh], 'r')
+                else:
+                    ax.plot(np.arange(dw_100minus,dw_100plus,1),\
+                             self.reducedspectrum[dw_100minus:dw_100plus],'k')
+                    ax.plot(np.arange(wlstart,wlend,1),\
+                        self.reducedspectrum[wlstart:wlend],'r')
+            mpl.show()
+
+        if confirm:
+            domask = input("Add this mask?: ")
+            if domask.lower() != 'y':
+                "No confirm, returning"
+                return
+        
+        for i, wlstart in enumerate(wlstartlist):
+            wlend = wlendlist[i]
+            if not index:
+                wh = whlist[i]
+                self.mask[wh[1:-1]] = 0
+            else:
+                self.mask[wlstart+1:wlend-1] = 0
+                
+    def maskRegion_old(self, wlstart, wlend, plot=False, confirm = True):
         
         if not self.reduced:
             print("Spectrum not reduced")
@@ -329,5 +401,53 @@ class WIFISIMF(WT.WIFISTelluric):
             domask = input("Do mask?: ")
             if domask.lower() == 'y':
                 self.reducedspectrum[wh] = np.nan
-                
+    
+    def applyMask(self):
         
+        if len(self.mask) == 0:
+            print("No mask created. Returning.")
+            return
+                
+        self.maskedspectrum = np.array(self.reducedspectrum)
+        self.maskedspectrum[self.mask == False] = np.nan
+
+    def write_wifis_spectrum(self, suffix='', kind = 'target'):
+        '''Function that writes the final reduced spectrum to file. 
+        Must have created a reduced spectrum first.
+        
+        If there is no reduced spectrum an extracted spectrum will be written instead.
+        
+        The first extension is the spectrum, second is the wavelength array, 
+        third (if calculated) is the uncertainties, fourth (if applicable) 
+        is the masking array.'''
+        
+        hdul = []
+        
+        if self.reduced:
+            print("Writing reduced final spectrum....")
+            hdul.append(fits.PrimaryHDU(self.reducedspectrum))
+        else:
+            print("Science spectrum not reduced...returning")
+            return
+
+        hdul.append(fits.ImageHDU(self.wl, name = 'WL'))
+        if self.target.uncertainties:
+            hdul.append(fits.ImageHDU(self.reducederr, name = 'ERR'))
+        else:
+            print('NO UNCERTAINTIES CALCULATED...INCLUDING ZERO ARRAY')
+            hdul.append(fits.ImageHDU(np.zeros(self.reducedspectrum.shape), \
+                                      name = 'ERRZERO'))
+        
+        if len(self.mask) != 0:
+            self.mask = np.array(self.mask, dtype = int)
+            hdul.append(fits.ImageHDU(self.mask, name = 'MASK'))
+        else:
+            print('NO MASK...INCLUDING ONES ARRAY')
+            hdul.append(fits.BinTableHDU(np.ones(self.reducedspectrum.shape, \
+                                             dtype=int), name = 'MASK'))
+            
+        hdulFull = fits.HDUList(hdul)
+
+        hdulFull.writeto(self.target.cubefile[:-5]+'_telluricreduced_'\
+                     +suffix+'.fits', overwrite=True)
+        print("Wrote to "+self.target.cubefile[:-5]+'_telluricreduced_'+suffix+'.fits')
