@@ -759,7 +759,7 @@ class WIFISSpectrum():
         return err
     
     def calcErrorsFinalCube(self, savefig = False):
-        '''The same as the shift component of self.calErrors except only uses the
+        '''The same as the shift component of self.calcErrors except only uses the
         extracted spectrum'''
         
         #inttime = self.cubehead['INTTIME']
