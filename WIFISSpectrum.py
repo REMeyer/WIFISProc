@@ -37,11 +37,11 @@ mpl.rc('text', usetex=True)
 mpl.rc('font', family='serif')
 
 def norm(spec):
-    ''' Quick function to median normalize an array.'''
+    '''Median normalize an array (spec).'''
     return spec/np.nanmedian(spec)
 
 def circle_spec(spec, x0, y0, radius, annulus = False):
-    '''Function that returns a mask defining the regions within a 
+    ''' Function that returns a mask defining the spaxels within a 
         circular aperature or in an circular annulus
 
         Inputs:
@@ -182,22 +182,22 @@ class WIFISSpectrum():
         self.uncertainties = False
         
     def getUncertainties(self, mode = 'Shift', plot=False, verbose=False):
-        '''Function that estimates uncertainties in two possible fashions:
+        '''Estimate the spectral uncertainties using one of the following methods:
         
-        1 - Direct) Directly determines the noise in the extracted region 
+        1 - Direct: Directly determines the noise in the extracted region 
                     by simply taking the square root of the signal and adding
-                    predetermined sky/thermal noise. 
-                    (Currently broken?)
-        2 - SEM)    Calculated the standard error of the mean (SEM) of the set 
-                    of individual observations. SEM defined as std(cube_spec)/N_spec. 
-                    This method should likely be used only when the number of individual 
-                    observations are 10+. Not sure if this is reliable for 
-                    WIFIS data
-        3 - Shift)  CURRENT DEFAULT. Same calculation as SEM except it rolls each 
-                    individual cube by a wavelength element. Attempts to better
-                    capture the noise.
-        4 - ShiftMedian) Same as shift except uses the median spectrum and rolls
-                    it around. Results in seemingly underestimated errors.
+                    predetermined sky/thermal noise. [MAY NOT CURRENTLY WORK]
+        2 - SEM:    Calculate the standard error of the mean (SEM) of the set 
+                    of individual observations. SEM is defined as 
+                    std(cube_spec)/N_spec. This method should likely be used 
+                    only when there are >10 observations. 
+                    Unsure if this is a reliable method for WIFIS spectra.
+        3 - Shift:  CURRENT DEFAULT. Same calculation as SEM except first roll
+                    each individual cube by a single wavelength element.
+                    This attempts to circumvent any systematic effects in 
+                    individual wavelength bins.
+        4 - ShiftMedian: Same as shift except uses the median spectrum and rolls
+                    it around. May result in underestimated errors.
         '''
         
         #Checking to see if spectrum is extracted
@@ -250,7 +250,8 @@ class WIFISSpectrum():
             self.cubenoise = noise
             self.uncertainties = True
             
-            errmean, errmedian, self.cubeerr = self.extractRegion(self.cubenoise, square_errors = True)
+            errmean, errmedian, self.cubeerr = self.extractRegion(self.cubenoise, 
+                                                        square_errors = True)
             
         elif mode == 'SEM':
             self.cubenoise = self.calcErrors(verbose=verbose)
@@ -279,8 +280,216 @@ class WIFISSpectrum():
             ax.legend()
             mpl.show()
             
+    def calcErrors(self, shift = False, newshift = False, savefig = False, 
+                   verbose = False, adj = False):
+        '''Calculates the uncertainties for the spectrum. See self.getUncertainties
+        for a definition of each method.'''
+
+        # Check to make sure a spectrum was extracted first. 
+        if self.extracted:
+            # Use the template adjusted cubes
+            if adj:
+                cubefls = glob(self.cubebasepath + '*obs_cube_adj.fits')
+            else:
+                cubefls = glob(self.cubebasepath + '*obs_cube.fits')
+
+            if verbose:
+                print("Files: ",cubefls)
+
+            #Extract the spectra and wavelength array for each observation
+            wls = []
+            specs = []
+            for cube in cubefls:
+                cubeff = fits.open(cube)
+                data = cubeff[0].data
+                head = cubeff[0].header
+
+                pixel = np.arange(data.shape[0]) + 1.0
+                wl = pixel*head['CDELT3'] + head['CRVAL3']
+                wl *= 1e10
+
+                mean, median, dsum = self.extractRegion(data)
+
+                #Use the mean spectrum
+                wls.append(wl)
+                specs.append(mean)
+
+                if verbose:
+                    print("Cube mean: ", mean)
+
+            newspecs = []
+            wlprime = self.cubewl
+
+            #If shifting use shifts that are equally balanced +/-
+            if shift:
+                k = len(specs) / 2
+                for i, j in enumerate(np.arange(-k,k)):
+                    s = specs[i]
+                    
+                    #Replace NaNs with the median. Should only be on the edges of the spectrum
+                    s[np.isnan(s)] = np.nanmedian(s)
+                    #Interpolate onto one wavelength array
+                    f1 = interp1d(wls[i], s , kind='cubic', bounds_error = False, fill_value=1.0)
+                    #Do the shifting (rolling)
+                    newspecs.append(np.roll(f1(wlprime), int(j)))
+
+                newspecs = np.array(newspecs)
+                if savefig:
+                    fig,ax = mpl.subplots(figsize = (12,7))
+                    ax.set_title('Shifted Spectra')
+                    for s in newspecs:
+                        ax.plot(self.cubewl, s)
+                    #ax.set_ylim((0,np.percentile(speccopy/err, 98)))
+                    ax.tick_params(labelsize=15)
+                    mpl.savefig('/Users/relliotmeyer/Desktop/shifted_'+savefig+'.png', dpi=300)
+                    mpl.show()
+
+            elif newshift:
+                shifts = [-2,-1,0,1,2]
+                specs *= 4
+                wls *= 4
+                for i in range(len(specs)):
+                    s = specs[i]
+                    
+                    #Replace NaNs with the median. Should only be on the edges of the spectrum
+                    s[np.isnan(s)] = np.nanmedian(s)
+                    #Interpolate onto one wavelength array
+                    f1 = interp1d(wls[i], s , kind='cubic', bounds_error = False, fill_value=1.0)
+                    #Do the shifting (rolling)
+                    newspecs.append(np.roll(f1(wlprime), shifts[i % len(shifts)]))
+
+                newspecs = np.array(newspecs)
+                if savefig:
+                    fig,ax = mpl.subplots(figsize = (12,7))
+                    ax.set_title('Shifted Spectra')
+                    for s in newspecs:
+                        ax.plot(self.cubewl, s)
+                    #ax.set_ylim((0,np.percentile(speccopy/err, 98)))
+                    ax.tick_params(labelsize=15)
+                    mpl.savefig('/Users/relliotmeyer/Desktop/shifted_'+savefig+'.png', dpi=300)
+                    mpl.show()
+
+            else:
+                #If not shifting (i.e. SEM mode) just interpolate onto the same wl grid.
+                for i, j in enumerate(specs):
+                    s = specs[i]
+                    s[np.isnan(s)] = np.nanmedian(s)
+
+                    f1 = interp1d(wls[i], s , kind='cubic', bounds_error = False, fill_value=1.0)
+                    newspecs.append(f1(wlprime))
+                    
+                if savefig:
+                    fig,ax = mpl.subplots(figsize = (12,7))
+                    ax.set_title('All Cubes')
+                    for s in newspecs:
+                        ax.plot(wlprime, s)
+                    #ax.set_ylim((0,np.percentile(speccopy/err, 98)))
+                    ax.tick_params(labelsize=15)
+                    mpl.savefig('/Users/relliotmeyer/Desktop/notshifted_'+savefig+'.png', dpi=300)
+                    mpl.show()                    
+                    
+            #Calculate the uncertainty as stddev / sqrt(N)
+            err = np.std(newspecs, axis = 0) / np.sqrt(len(newspecs))
+        else:
+            print("Spectrum must be extracted first.")
+
+        return err
+    
+    def calcErrorsFinalCube(self, savefig = False):
+        '''A copy of the shift method in self.calcErrors above, expect it uses
+            the extracted spectrum from the datacube instead of the individual
+            exposures that go into the datacube.'''
+        
+        #inttime = self.cubehead['INTTIME']
+        #gain = 1.33            
+        speccopy = np.array(self.spectrum)# / (inttime * gain))
+        speccopy[np.isnan(speccopy)] = -1
+
+        rollrange = np.arange(-6,6,1)
+        newsums = []
+        for j in rollrange:
+            f1 = interp1d(self.cubewl, speccopy , kind='cubic', bounds_error = False, fill_value=1.0)
+            newsums.append(np.roll(speccopy, int(j)))
+
+        newsums = np.array(newsums)
+        err = np.std(newsums, axis = 0) / len(rollrange)
+        
+        if savefig:
+            fig,ax = mpl.subplots(figsize = (12,7))
+            ax.set_title('Shifted Median Spectra')
+            for s in newsums:
+                ax.plot(self.cubewl, s)
+            #ax.set_ylim((0,np.percentile(speccopy/err, 98)))
+            ax.tick_params(labelsize=15)
+            mpl.savefig('/Users/relliotmeyer/Desktop/shiftedmedian_'+savefig+'.png', dpi=300)
+            mpl.show()
+        
+        return err
+    
+    def extractRegion(self, data, inttime = 1, gain = 1, square_errors = False):
+        '''Extracts the region defined by limits, circle, or ellipse, then calculates
+        the mean, median, and sum of the spaxels for each spectral element.
+        
+        If no region is defined then it returns a fully collapsed cube, averaged 
+        along all spatial dimensions.'''
+        
+        #For a rectangular region
+        if self.limits:
+            specslice = data[:,self.limits[0]:self.limits[1],self.limits[2]:self.limits[3]]
+            specmean = np.nanmean(specslice, axis=(1,2)) #* inttime * gain
+            specmedian = np.nanmedian(specslice, axis=(1,2)) #* inttime * gain
+            specsum = np.nansum(specslice, axis=(1,2)) #* inttime * gain
+            
+            if square_errors:
+                specsum = np.sqrt(np.sum(specslice**2.0, axis = (1,2)))
+            
+        #For a circular region
+        elif self.circle:
+            
+            whgood = circle_spec(data, self.circle[0],self.circle[1],\
+                                 self.circle[2], annulus = self.circle[3])
+            flatdata = data.reshape(data.shape[0],-1)
+            whgoodflat = whgood.flatten()
+            specslice = flatdata[:,whgoodflat]
+            
+            specmean = np.nanmean(specslice, axis = 1)
+            specmedian = np.nanmedian(specslice, axis = 1)
+            specsum = np.nansum(specslice, axis = 1)
+            if square_errors:
+                specsum = np.sqrt(np.sum(specslice**2.0, axis = 1))
+
+        #For an elliptical region
+        elif self.ellipse:
+            whgood = ellipse_region(data, (self.ellipse[0], self.ellipse[1]),\
+                        self.ellipse[3], self.ellipse[4], self.ellipse[2], \
+                        annulus = self.ellipse[5])
+            flatdata = data.reshape(data.shape[0],-1)
+            whgoodflat = whgood.flatten()
+            specslice = flatdata[:,whgoodflat]
+            
+            specmean = np.nanmean(specslice, axis = 1)
+            specmedian = np.nanmedian(specslice, axis = 1)
+            specsum = np.nansum(specslice, axis = 1)
+            
+            if square_errors:
+                specsum = np.sqrt(np.nansum(specslice**2.0, axis = 1))
+            
+        #Just collapse the entire cube into a single spectrum
+        else:
+            specslice = data
+                                  
+            specmean = np.nanmean(specslice, axis=(1,2)) #* inttime * gain
+            specmedian = np.nanmean(specslice, axis=(1,2)) #* inttime * gain
+            specsum = np.nansum(specslice, axis = (1,2)) #* inttime * gain
+                                  
+            if square_errors:
+                specsum = np.sqrt(np.sum(specslice**2.0, axis = (1,2)))
+
+            
+        return specmean, specmedian, specsum
+    
     def extractSpectrum(self, kind = 'mean'):
-        '''Function that extracts a telluric or science spectrum in the defined
+        '''Method that extracts a telluric or science spectrum in the defined
         rectangular, circular, or elliptical region.
         '''
 
@@ -552,7 +761,6 @@ class WIFISSpectrum():
                 self.plotax.tick_params(axis='both', labelsize = 13, \
                                         top=True, right=True)
             
-    
     def writeSpectrum(self, suffix=''):
         '''Function that writes the extracted spectrum to file. 
         Must have created a reduced spectrum first.
@@ -582,211 +790,7 @@ class WIFISSpectrum():
         except:
             print("There was a problem saving the spectrum")
     
-    def extractRegion(self, data, inttime = 1, gain = 1, square_errors = False):
-        '''Extracts the region defined by limits, circle, or ellipse, then calculates
-        the mean, median, and sum of the spaxels for each spectral element.
-        
-        If no region is defined then it returns a fully collapsed cube, averaged 
-        along all spatial dimensions.'''
-        
-        #For a rectangular region
-        if self.limits:
-            specslice = data[:,self.limits[0]:self.limits[1],self.limits[2]:self.limits[3]]
-            specmean = np.nanmean(specslice, axis=(1,2)) #* inttime * gain
-            specmedian = np.nanmedian(specslice, axis=(1,2)) #* inttime * gain
-            specsum = np.nansum(specslice, axis=(1,2)) #* inttime * gain
-            
-            if square_errors:
-                specsum = np.sqrt(np.sum(specslice**2.0, axis = (1,2)))
-            
-        #For a circular region
-        elif self.circle:
-            
-            whgood = circle_spec(data, self.circle[0],self.circle[1],\
-                                 self.circle[2], annulus = self.circle[3])
-            flatdata = data.reshape(data.shape[0],-1)
-            whgoodflat = whgood.flatten()
-            specslice = flatdata[:,whgoodflat]
-            
-            specmean = np.nanmean(specslice, axis = 1)
-            specmedian = np.nanmedian(specslice, axis = 1)
-            specsum = np.nansum(specslice, axis = 1)
-            if square_errors:
-                specsum = np.sqrt(np.sum(specslice**2.0, axis = 1))
 
-        #For an elliptical region
-        elif self.ellipse:
-            whgood = ellipse_region(data, (self.ellipse[0], self.ellipse[1]),\
-                        self.ellipse[3], self.ellipse[4], self.ellipse[2], \
-                        annulus = self.ellipse[5])
-            flatdata = data.reshape(data.shape[0],-1)
-            whgoodflat = whgood.flatten()
-            specslice = flatdata[:,whgoodflat]
-            
-            specmean = np.nanmean(specslice, axis = 1)
-            specmedian = np.nanmedian(specslice, axis = 1)
-            specsum = np.nansum(specslice, axis = 1)
-            
-            if square_errors:
-                specsum = np.sqrt(np.nansum(specslice**2.0, axis = 1))
-            
-        #Just collapse the entire cube into a single spectrum
-        else:
-            specslice = data
-                                  
-            specmean = np.nanmean(specslice, axis=(1,2)) #* inttime * gain
-            specmedian = np.nanmean(specslice, axis=(1,2)) #* inttime * gain
-            specsum = np.nansum(specslice, axis = (1,2)) #* inttime * gain
-                                  
-            if square_errors:
-                specsum = np.sqrt(np.sum(specslice**2.0, axis = (1,2)))
-
-            
-        return specmean, specmedian, specsum
-    
-
-    def calcErrors(self, shift = False, newshift = False, savefig = False, verbose = False, adj = False):
-        '''Calculates the uncertainties for the spectrum. See self.getUncertainties
-        for a definition of each method'''
-
-        if self.extracted:
-            # Use the template adjusted cubes
-            if adj:
-                cubefls = glob(self.cubebasepath + '*obs_cube_adj.fits')
-            else:
-                cubefls = glob(self.cubebasepath + '*obs_cube.fits')
-
-            if verbose:
-                print("Files: ",cubefls)
-
-            #Extract the spectra and wavelength array for each observation
-            wls = []
-            specs = []
-            for cube in cubefls:
-                cubeff = fits.open(cube)
-                data = cubeff[0].data
-                head = cubeff[0].header
-
-                pixel = np.arange(data.shape[0]) + 1.0
-                wl = pixel*head['CDELT3'] + head['CRVAL3']
-                wl *= 1e10
-
-                mean, median, dsum = self.extractRegion(data)
-
-                #Use the mean spectrum
-                wls.append(wl)
-                specs.append(mean)
-
-                if verbose:
-                    print("Cube mean: ", mean)
-
-            newspecs = []
-            wlprime = self.cubewl
-
-            #If shifting use shifts that are equally balanced +/-
-            if shift:
-                k = len(specs) / 2
-                for i, j in enumerate(np.arange(-k,k)):
-                    s = specs[i]
-                    
-                    #Replace NaNs with the median. Should only be on the edges of the spectrum
-                    s[np.isnan(s)] = np.nanmedian(s)
-                    #Interpolate onto one wavelength array
-                    f1 = interp1d(wls[i], s , kind='cubic', bounds_error = False, fill_value=1.0)
-                    #Do the shifting (rolling)
-                    newspecs.append(np.roll(f1(wlprime), int(j)))
-
-                newspecs = np.array(newspecs)
-                if savefig:
-                    fig,ax = mpl.subplots(figsize = (12,7))
-                    ax.set_title('Shifted Spectra')
-                    for s in newspecs:
-                        ax.plot(self.cubewl, s)
-                    #ax.set_ylim((0,np.percentile(speccopy/err, 98)))
-                    ax.tick_params(labelsize=15)
-                    mpl.savefig('/Users/relliotmeyer/Desktop/shifted_'+savefig+'.png', dpi=300)
-                    mpl.show()
-
-            elif newshift:
-                shifts = [-2,-1,0,1,2]
-                specs *= 4
-                wls *= 4
-                for i in range(len(specs)):
-                    s = specs[i]
-                    
-                    #Replace NaNs with the median. Should only be on the edges of the spectrum
-                    s[np.isnan(s)] = np.nanmedian(s)
-                    #Interpolate onto one wavelength array
-                    f1 = interp1d(wls[i], s , kind='cubic', bounds_error = False, fill_value=1.0)
-                    #Do the shifting (rolling)
-                    newspecs.append(np.roll(f1(wlprime), shifts[i % len(shifts)]))
-
-                newspecs = np.array(newspecs)
-                if savefig:
-                    fig,ax = mpl.subplots(figsize = (12,7))
-                    ax.set_title('Shifted Spectra')
-                    for s in newspecs:
-                        ax.plot(self.cubewl, s)
-                    #ax.set_ylim((0,np.percentile(speccopy/err, 98)))
-                    ax.tick_params(labelsize=15)
-                    mpl.savefig('/Users/relliotmeyer/Desktop/shifted_'+savefig+'.png', dpi=300)
-                    mpl.show()
-
-            else:
-                #If not shifting (i.e. SEM mode) just interpolate onto the same wl grid.
-                for i, j in enumerate(specs):
-                    s = specs[i]
-                    s[np.isnan(s)] = np.nanmedian(s)
-
-                    f1 = interp1d(wls[i], s , kind='cubic', bounds_error = False, fill_value=1.0)
-                    newspecs.append(f1(wlprime))
-                    
-                if savefig:
-                    fig,ax = mpl.subplots(figsize = (12,7))
-                    ax.set_title('All Cubes')
-                    for s in newspecs:
-                        ax.plot(wlprime, s)
-                    #ax.set_ylim((0,np.percentile(speccopy/err, 98)))
-                    ax.tick_params(labelsize=15)
-                    mpl.savefig('/Users/relliotmeyer/Desktop/notshifted_'+savefig+'.png', dpi=300)
-                    mpl.show()                    
-                    
-            #Calculate the uncertainty as stddev / sqrt(N)
-            err = np.std(newspecs, axis = 0) / np.sqrt(len(newspecs))
-        else:
-            print("Spectrum must be extracted first.")
-
-        return err
-    
-    def calcErrorsFinalCube(self, savefig = False):
-        '''The same as the shift component of self.calcErrors except only uses the
-        extracted spectrum'''
-        
-        #inttime = self.cubehead['INTTIME']
-        #gain = 1.33            
-        speccopy = np.array(self.spectrum)# / (inttime * gain))
-        speccopy[np.isnan(speccopy)] = -1
-
-        rollrange = np.arange(-6,6,1)
-        newsums = []
-        for j in rollrange:
-            f1 = interp1d(self.cubewl, speccopy , kind='cubic', bounds_error = False, fill_value=1.0)
-            newsums.append(np.roll(speccopy, int(j)))
-
-        newsums = np.array(newsums)
-        err = np.std(newsums, axis = 0) / len(rollrange)
-        
-        if savefig:
-            fig,ax = mpl.subplots(figsize = (12,7))
-            ax.set_title('Shifted Median Spectra')
-            for s in newsums:
-                ax.plot(self.cubewl, s)
-            #ax.set_ylim((0,np.percentile(speccopy/err, 98)))
-            ax.tick_params(labelsize=15)
-            mpl.savefig('/Users/relliotmeyer/Desktop/shiftedmedian_'+savefig+'.png', dpi=300)
-            mpl.show()
-        
-        return err
 
     def resetRedshift(z):
         '''Updates the class variables z and cubewlz with a new redshift'''

@@ -31,12 +31,12 @@ curr_dir = os.path.dirname(os.path.realpath(__file__))
 
 #Contributed by Margaret
 def fwhm2sigma(fwhm):
-    ''' Quick function to convert a gaussian fwhm to a standard deviation.'''
+    ''' Convert a gaussian fwhm to a standard deviation.'''
     
     return fwhm / np.sqrt(8 * np.log(2))
 
 def create_vega_con():
-    '''One-off function to create a vega spectrum for use in correcting WIFIS 
+    '''Create a vega spectrum for use in correcting WIFIS 
     telluric spectra'''
     
     vega = pd.read_csv("vega.txt", sep = "\s+", header=None)
@@ -74,7 +74,7 @@ def create_vega_con():
 ##############################################################
 
 class WIFISTelluric():
-    '''Class that hanles the telluric reduction procedure for WIFIS spectra.'''
+    '''Class that handles the telluric reduction procedures for WIFIS spectra.'''
 
     def __init__(self, target, telluric):
         '''Inputs for the class are:
@@ -106,11 +106,17 @@ class WIFISTelluric():
     def do_telluric_reduction(self, hlinemode = 'measure',\
                     interactivetelluric = False, plot = True, profile='lorentzian',\
                     telluricmask = [], hlineplot=False):
-        '''Function that reduces the science spectrum with a telluric spectrum. 
-        First removes h-lines from the telluric spectrum with either a vega spectrum from file,
-        or directly fitting the lines. Has interactive modes to manually stretch and shift
-        the fitting spectra to match the target spectra. Then corrects the galaxy spectrum by
-        the telluric spectrum.'''
+        '''Function that corrects the science spectrum with a telluric star
+            spectrum. 
+
+        First removes h-lines from the telluric spectrum with either a vega 
+        spectrum from file, or by directly fitting the lines. 
+        
+        Has interactive modes to manually stretch and shift
+        the fitting spectra to match the target spectra. 
+        
+        Finally, corrects the galaxy spectrum with the processed
+        telluric spectrum.'''
 
         ##Loading convolved Vega
         vega_con = pd.read_csv(curr_dir+'/vega-con-new.txt',\
@@ -119,12 +125,13 @@ class WIFISTelluric():
         self.vegawl = vega_con['a']
         self.vegadata = vega_con['b']
         
-        #Creates tellspecreduced, tellerrreduced
+        # Remove Hlines (i.e. Vega reduction or otherwise)
+        # Creates tellspecreduced, tellerrreduced
         self.correctHLines(hlinemode, profile = profile, hlineplot = hlineplot)
 
         #self.write_reduced_spectrum(kind = 'Telluric')
         
-        #Create interpolator of telluric spectrum (using non-NaN values)
+        #Interpolate telluric star spectrum (using non-NaN values)
         notnan = ~np.isnan(self.tellspecreduced)
         TelStar_Interp = interp1d(self.telluric.cubewl[notnan], self.tellspecreduced[notnan], \
                                   kind='cubic', bounds_error=False)
@@ -132,7 +139,7 @@ class WIFISTelluric():
         TelErr_Interp = interp1d(self.telluric.cubewl[notnanerr], self.tellerrreduced[notnanerr], \
                                   kind='cubic', bounds_error=False)
                 
-        #If interactive then enter interactive fitting mode
+        # If interactive mode then enter interactive fitting mode
         if interactivetelluric:
             #self.interactive_vega(TelStar_Interp, kind = 'Galaxy')
             self.shiftScale(TelStar_Interp, kind = 'Target')
@@ -148,7 +155,8 @@ class WIFISTelluric():
         normtell = WS.norm(self.tellinterp)
         normtellerr = self.tellerrinterp / np.nanmedian(self.tellinterp)
         
-        # Removing specified regions from the telluric spectrum via a linear fit
+        # If specfified, remove specified regions from the telluric spectrum 
+        # via a linear fit
         if len(telluricmask) > 0:
             for i in range(len(telluricmask)):
                 whgd = np.where((self.target.cubewl >= telluricmask[i][0]) & \
@@ -159,14 +167,18 @@ class WIFISTelluric():
                 cont = contfit(self.target.cubewl[whgd])
                 normtell[whgd] = cont
 
+        # Divide the science spectrum by the processed telluric spectrum
         self.reducedspectrum = self.target.spectrum / normtell
+
+        # Propogate errors
         errterm = np.sqrt((self.target.cubenoise / self.target.spectrum)**2.0 + \
                          (normtellerr / normtell)**2.0)
-        
-
         self.reducederr = self.reducedspectrum * errterm 
+
+        # Mark class flag for reduced
         self.reduced = True
 
+        # Plot noise spectrum
         fig, ax = mpl.subplots(figsize = (15,7))
         ax.plot(self.telluric.cubewl, self.telluric.cubenoise,label='telluricnoise')
         ax.plot(self.wl, self.target.cubenoise,label = 'targetnoise')
@@ -360,13 +372,14 @@ class WIFISTelluric():
                 mpl.show()
 
     def measure_hlines(self, fittype='quadratic', plot=True, remove=False, profile='lorentzian'):
-        '''TESTING FUNCTION: To determine the wl offset between the vega and telluric spectrum'''
+        '''Determine the wl offset between the vega and telluric spectrum
+        Can use different line profiles: lorentzian, voight.'''
 
-        #hlinelow =  [8840,8960,9190,9520,10000,10880,12775]
-        #hlinehigh = [8925,9050,9275,9600,10120,11020,12880]
+        # Hline fitting bands
         hlinelow =  [8840,8960,9190,9520,9900,10880,12720]
         hlinehigh = [8925,9050,9275,9600,10120,11020,12900]
 
+        # Central guesses
         midguess = np.array([8865, 9017, 9232, 9550, 10052, 10941, 12822])
         midwl = [np.mean([hlinelow[i],hlinehigh[i]]) for i in range(len(hlinelow))]
         
@@ -376,7 +389,8 @@ class WIFISTelluric():
         if plot and fittype == 'normal':
             fig, axes = mpl.subplots(2,4, figsize = (15,7))
             axes = axes.flatten()
-        
+
+        # Do the fitting.        
         good = np.ones(len(midguess[2:]), dtype=bool)
         linefitwl = []
         for l in range(len(hlinelow)):
@@ -457,7 +471,8 @@ class WIFISTelluric():
                 print("Couldn't fit line #", l)
                 if l > 1:
                     good[l - 2] = False
-                
+        
+        # Do a polynomial fit to the line center locations. 
         pf = np.polyfit(linefitwl, diffs, 2)
         #pf = np.polyfit(midguess[2:][good], diffs[2:][good], 2)
         polyfit = np.poly1d(pf)

@@ -16,9 +16,11 @@ import WIFISSpectrum as WS
 import WIFISFitting as gf
 import scipy.ndimage
 
+# Path to base directory for CVD18 model files
 mbase = '/home/elliot/mcmcgemini/spec'
 
 def convolvemodels(wlfull, datafull, veldisp):
+    '''Gaussian broadening of spectra using a particular velocity dispersion'''
 
     reg = (wlfull >= 9500) & (wlfull <= 13500)
     
@@ -48,8 +50,16 @@ def convolvemodels(wlfull, datafull, veldisp):
 
 ####################################################################
 class WIFISIMF(WT.WIFISTelluric):
+    '''
+    Class that builds on the telluric reduction functionality of the 
+    WIFISTelluric class with some additional visualisation options. 
+    Most of the methods in this class are unnecessary for just the 
+    postprocessing of the WIFIS datacubes. 
+    '''
+
 
     def __init__(self, target, telluric, veldisp, mode='lines'):
+        
         super().__init__(target, telluric)
         
         if mode == 'lines':
